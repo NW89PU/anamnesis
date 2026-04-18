@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { IconBackspace, IconHeartRateMonitor, IconShield, IconFingerprint } from '@tabler/icons-react';
+import { IconBackspace, IconShield, IconFingerprint } from '@tabler/icons-react';
 import { startAuthentication, browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import { api } from '@/shared/api/client';
 import { EP } from '@/shared/api/endpoints';
@@ -469,23 +469,18 @@ export function PinScreen() {
         background: 'var(--bg)',
       }}
     >
-      <div
+      <img
+        src="/icons/icon.svg"
+        alt="Anamnesis"
         style={{
           width: 80,
           height: 80,
-          borderRadius: 24,
-          background: 'linear-gradient(135deg, var(--purple), var(--blue))',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
           marginBottom: 24,
-          boxShadow: '0 8px 24px rgba(175,82,222,0.3)',
+          filter: 'drop-shadow(0 8px 24px rgba(121,28,231,0.3))',
         }}
-      >
-        <IconHeartRateMonitor size={36} color="#fff" />
-      </div>
+      />
       <h2 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
-        Здоровье семьи
+        Anamnesis
       </h2>
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 32 }}>
         {lockout.locked ? 'Слишком много попыток' : 'Введите PIN-код для входа'}

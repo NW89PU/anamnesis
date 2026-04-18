@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { NavLink, useLocation } from 'react-router';
 import {
-  IconHeartRateMonitor,
   IconLayoutDashboard,
   IconListCheck,
   IconAlertTriangle,
@@ -121,11 +120,9 @@ export function Sidebar() {
       {/* Header: brand + PatientSwitcher */}
       <div className="ds-sidebar-header">
         <div className="ds-brand">
-          <div className="ds-brand-icon">
-            <IconHeartRateMonitor size={18} />
-          </div>
+          <img src="/icons/icon.svg" alt="Anamnesis" className="ds-brand-logo" />
           <div style={{ minWidth: 0 }}>
-            <div className="ds-brand-title">Здоровье семьи</div>
+            <div className="ds-brand-title">Anamnesis</div>
             <div className="ds-brand-subtitle">Медицинский трекер</div>
           </div>
         </div>

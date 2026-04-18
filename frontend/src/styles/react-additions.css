@@ -391,16 +391,12 @@ button,
     gap: 10px;
     margin-bottom: 14px;
   }
-  .ds-brand-icon {
+  .ds-brand-logo {
     width: 32px;
     height: 32px;
-    border-radius: 10px;
-    background: linear-gradient(135deg, var(--purple), var(--blue));
-    color: #fff;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     flex-shrink: 0;
+    /* icon.svg уже содержит squircle-фон и всю композицию —
+       градиенты и border-radius не нужны */
   }
   .ds-brand-title {
     font-size: 15px;

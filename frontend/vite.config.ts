@@ -31,9 +31,9 @@ export default defineConfig(({ mode }) => {
           'icons/icon-512.png',
         ],
         manifest: {
-          name: 'Здоровье семьи',
-          short_name: 'Здоровье',
-          description: 'Семейный медицинский трекер',
+          name: 'Anamnesis',
+          short_name: 'Anamnesis',
+          description: 'AI-coordinated medical records tracker',
           theme_color: '#791CE7',
           background_color: '#F2F2F7',
           display: 'standalone',
