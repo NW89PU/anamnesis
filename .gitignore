@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+
+# Env
+.env
+.env.local
+
+# Build output
+frontend/dist/
+frontend/.vite/
+frontend/stats.html
+
+# Database — never commit patient data
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Uploaded patient documents
+backend/uploads/
+!backend/uploads/.gitkeep
+
+# Temp files
+/tmp/
+tmp/
+tmp-*/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude / AI work directories
+.claude/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Working materials (scan drop folders etc)
+Расшифровки/
+ответы.txt

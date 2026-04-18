@@ -1,0 +1,696 @@
+/*
+ * Добавочные классы для React-версии.
+ *
+ * Это стили для компонентов которых нет в vanilla frontend/css/style.css:
+ * - Collapsible (новый компонент для Dashboard)
+ * - Chip (фильтр-табы в Documents)
+ * - IconButton (круглые иконочные кнопки)
+ * - modal-handle-area (touch target для swipe-to-close)
+ * - card-interactive (hover/active для кликабельных карточек)
+ * - form-input-invalid (красная обводка при ошибке валидации)
+ * - page-container (контейнер страницы)
+ * - app-main (корректировка основной области — учёт header + tab-bar)
+ *
+ * ВНИМАНИЕ: не добавляй сюда НОВЫЕ токены или переменные. Всё должно использовать
+ * существующие `var(--xxx)` из tokens.css и app.css.
+ */
+
+/* ── App shell ────────────────────────────────────────────── */
+
+/* Override vanilla --header-height — делаем мобильный хедер компактнее
+   (vanilla был 96px, стало 76px ≈ −20%). Применяется к vanilla
+   .header (position: fixed, height: var(--header-height)) и к body
+   padding-top. */
+:root {
+  --header-height: 76px;
+}
+
+/* Vanilla .header сам себя стилизует как flex column с padding снизу.
+   Чтобы уменьшить визуальный верх, уменьшаем padding под хедером (top). */
+.header {
+  padding: 0 20px 10px !important;
+}
+.header-title {
+  font-size: 28px !important;
+  letter-spacing: -0.4px !important;
+}
+
+.app-main {
+  /* Меньше отступ сверху теперь (header стал меньше) */
+  padding-top: 6px;
+  padding-bottom: calc(var(--tab-height) + 12px);
+  padding-left: 16px;
+  padding-right: 16px;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+.page-container {
+  max-width: 600px;
+  margin: 0 auto;
+  padding-top: 8px;
+  padding-bottom: 16px;
+}
+
+/* ── Card interactivity ───────────────────────────────────── */
+
+.card-interactive {
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.card-interactive:active {
+  transform: scale(0.98);
+  box-shadow: var(--shadow);
+}
+
+.card-interactive:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* ── Collapsible ──────────────────────────────────────────── */
+
+.collapsible {
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.collapsible-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.collapsible-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.collapsible-content {
+  padding: 0 16px 16px 16px;
+}
+
+/* ── Chip (filter tabs) ───────────────────────────────────── */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 20px;
+  border: none;
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  transition: all 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.chip:active {
+  transform: scale(0.96);
+}
+
+.chip-active {
+  background: var(--blue);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.3);
+}
+
+/* ── Icon Button ──────────────────────────────────────────── */
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.icon-button:active {
+  transform: scale(0.92);
+  background: var(--separator);
+}
+
+.icon-button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* ── Form: invalid state ──────────────────────────────────── */
+
+.form-input-invalid,
+.form-textarea.form-input-invalid,
+.form-select.form-input-invalid {
+  box-shadow: 0 0 0 2px var(--red) !important;
+}
+
+/* ── Modal handle area (increased hit target for swipe) ──── */
+
+.modal-handle-area {
+  padding: 8px 0 4px 0;
+  display: flex;
+  justify-content: center;
+  cursor: grab;
+}
+
+.modal-handle-area:active {
+  cursor: grabbing;
+}
+
+/* ── Override vanilla CSS keyframes — Motion управляет анимацией ──── */
+/* Vanilla style.css имеет @keyframes overlayIn / sheetSlideUp на
+   .modal-overlay и .modal-sheet. Они запускаются при mount и конфликтуют
+   с Motion initial/animate transforms. Отключаем CSS-анимации —
+   анимацию делает framer-motion через React компонент Sheet. */
+.modal-overlay {
+  animation: none !important;
+  z-index: var(--z-modal-overlay, 1000);
+}
+
+/* Sheet больше НЕ скроллится целиком. Скролл делегирован на .modal-scroll-body.
+   Это нужно для scroll-aware drag-to-close: мы отслеживаем scrollTop
+   внутреннего элемента, чтобы drag начинался только когда скролл в верху. */
+.modal-sheet {
+  animation: none !important;
+  will-change: transform;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column;
+}
+
+/* Контейнер скроллируемого содержимого sheet.
+   - `flex: 1 1 auto` + `min-height: 0` — обязательны для flex-child со scroll
+   - `overscroll-behavior: contain` — скролл не bubbles на body page
+   - `-webkit-overflow-scrolling: touch` — momentum на iOS (legacy, но safe) */
+.modal-scroll-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  min-height: 0;
+  /* Разрешаем браузеру pan-y (vertical scroll).
+     Motion перехватит pointer через pointer capture когда drag начнётся. */
+  touch-action: pan-y;
+}
+
+/* Handle area должна ловить touch события (их не перехватывает browser pan) */
+.modal-handle-area {
+  touch-action: none;
+}
+
+/* ── Empty state title (если нет в vanilla) ──────────────── */
+
+.empty-state-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 8px 0 4px 0;
+}
+
+/* ── Update prompt (PWA обновления) ──────────────────────── */
+
+.update-toast {
+  position: fixed;
+  bottom: calc(var(--tab-height) + 16px);
+  left: 16px;
+  right: 16px;
+  max-width: 500px;
+  margin: 0 auto;
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  z-index: var(--z-toast);
+  font-size: 14px;
+  color: var(--text);
+}
+
+/* ── Disabled stat-card (когда не кликабельна) ───────────── */
+
+.stat-card:disabled {
+  opacity: 1; /* визуально не делаем тусклым */
+  cursor: default;
+}
+
+/* ── StatCard rendered as <button> — убрать дефолтную рамку браузера ── */
+/* В vanilla .stat-card был <div>, в React мы делаем <button> для a11y + haptic. */
+/* Но браузер рисует свою border/outline на button — убираем. */
+button.stat-card {
+  border: none;
+  outline: none;
+  font-family: inherit;
+  text-align: center;
+  width: 100%;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+button.stat-card:focus {
+  outline: none;
+}
+
+button.stat-card:focus-visible {
+  outline: 2px solid rgba(0, 122, 255, 0.5);
+  outline-offset: 2px;
+}
+
+/* Общий fix: любая кнопка с vanilla-классом не должна иметь browser default */
+button.card,
+button.timeline-item,
+button.diagnosis-item,
+button.medication-item,
+button.alert-card {
+  border: none;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+  background: var(--card);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Tab-bar кнопки — vanilla .tab-item был <a>, стал <button> для передачи
+   state при навигации. Убираем browser default border/background/outline. */
+button.tab-item {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-family: inherit;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+button.tab-item:focus,
+button.tab-item:focus-visible {
+  outline: none;
+}
+
+/* ── Disable iOS bounce on body when modal open ──────────── */
+/* Применяется через JS в Sheet.tsx — document.body.style.overflow='hidden' */
+
+/* ── Touch callout off на всех интерактивных ─────────────── */
+
+button,
+.tab-item,
+.card-interactive,
+.stat-card,
+.chip,
+.icon-button {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ═══════════════════════════════════════════════════════════ */
+/* ═══════════ DESKTOP LAYOUT (≥ 1024px) ═══════════════════ */
+/* ═══════════════════════════════════════════════════════════ */
+
+@media (min-width: 1024px) {
+  /* Убрать мобильные layout constants */
+  :root {
+    --ds-sidebar-width: 280px;
+    --ds-header-height: 60px;
+  }
+
+  /* КРИТИЧНО: обнуляем body paddings, которые в vanilla зарезервированы
+     под fixed header (96px сверху) и tab-bar (83px снизу). На десктопе
+     их нет — без этого сверху зияла пустая полоса 96px. */
+  body {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Весь app становится двухколоночным grid */
+  .ds-app {
+    display: grid;
+    grid-template-columns: var(--ds-sidebar-width) 1fr;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Мобильные header и tab-bar не нужны (AppShell их не рендерит в desktop mode
+     — дополнительная подстраховка через display:none если вдруг остались) */
+  .ds-app .header,
+  .ds-app .tab-bar {
+    display: none !important;
+  }
+
+  /* ── Sidebar ──────────────────────────────────────────────── */
+  .ds-sidebar {
+    background: #FAFAFB;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    height: 100vh;
+  }
+  .ds-sidebar-header {
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--separator);
+    flex-shrink: 0;
+  }
+  .ds-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .ds-brand-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--purple), var(--blue));
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .ds-brand-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1.2;
+  }
+  .ds-brand-subtitle {
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .ds-patient-card-desktop {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--card);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    cursor: pointer;
+  }
+  .ds-patient-avatar-desktop {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--blue), var(--purple));
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .ds-patient-name-desktop {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ds-patient-meta-desktop {
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  /* Nav */
+  .ds-nav {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .ds-nav-section-title {
+    padding: 12px 12px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+  }
+  .ds-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.12s ease;
+    text-decoration: none;
+    border: none;
+    background: transparent;
+    width: 100%;
+    font-family: inherit;
+    text-align: left;
+  }
+  .ds-nav-item:hover {
+    background: rgba(0, 0, 0, 0.04);
+  }
+  .ds-nav-item.active {
+    background: rgba(0, 122, 255, 0.12);
+    color: var(--blue);
+  }
+  .ds-nav-item.active svg {
+    color: var(--blue);
+  }
+  .ds-nav-item > span:not(.ds-nav-badge) {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ds-nav-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 10px;
+    /* Default: тёмно-серый фон с белым текстом — хорошо видно
+       и на inactive (светлый sidebar) и на active (голубом) фоне */
+    background: var(--text-secondary);
+    color: #fff;
+    min-width: 20px;
+    text-align: center;
+    line-height: 1.4;
+  }
+  .ds-nav-badge.red { background: var(--red); color: #fff; }
+  .ds-nav-badge.orange { background: var(--orange); color: #fff; }
+  .ds-nav-badge.green { background: var(--green); color: #fff; }
+  .ds-nav-badge.purple { background: var(--purple); color: #fff; }
+
+  .ds-sidebar-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--separator);
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  /* ── Main area ─────────────────────────────────────────── */
+  .ds-main {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    height: 100vh;
+  }
+  .ds-main-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0;
+  }
+
+  /* Desktop header — упрощённый */
+  .ds-header {
+    flex-shrink: 0;
+    padding: 20px 32px 16px;
+    border-bottom: 1px solid var(--separator);
+    background: var(--card);
+  }
+  .ds-header-title {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  /* Page container: ширину увеличиваем, убираем mobile padding */
+  .page-container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px 32px;
+  }
+
+  /* Скрываем мобильный app-main layout на десктопе если вдруг остался */
+  .app-main {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  /* Dashboard — stat grid 4 в ряд */
+  .stats-grid {
+    grid-template-columns: repeat(4, 1fr) !important;
+  }
+
+  /* ── Модалки: centered dialog вместо bottom sheet ──────── */
+  .modal-overlay-desktop {
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 20px;
+  }
+  .modal-sheet-desktop {
+    max-width: 720px;
+    max-height: 85vh;
+    width: 100%;
+    border-radius: 20px !important;
+    margin: 0 auto;
+    transform-origin: center center;
+    /* Более выраженная тень на десктопе */
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25), 0 10px 25px rgba(0, 0, 0, 0.15);
+  }
+
+  /* Улучшение: tab-bar скрыт, вся мобильная нижняя навигация не нужна */
+  .tab-bar {
+    display: none !important;
+  }
+
+  /* Hover для cards / list-items в десктоп-режиме */
+  .card-interactive:hover,
+  .timeline-item:hover,
+  .checklist-item:hover,
+  .diagnosis-item:hover,
+  .medication-item:hover,
+  .error-card:hover,
+  .list-item:hover {
+    background: #F9F9FB;
+    transition: background 0.1s ease;
+  }
+
+  /* ── Full-page модалки на десктопе (desktopStyle="page") ─── */
+  .ds-page {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px 32px;
+  }
+  .ds-page-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .ds-page-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 7px 13px;
+    border-radius: 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.12s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .ds-page-back:hover {
+    background: var(--separator);
+    color: var(--text);
+    border-color: transparent;
+  }
+  .ds-page-title {
+    margin: 0;
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.3px;
+  }
+  .ds-page-body {
+    /* Inherits typography from context */
+  }
+  .ds-page-footer {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--separator);
+  }
+
+  /* ── Элементы списков на десктопе получают свои карточки ─ */
+  /* Vanilla .list-item прозрачный — предполагается обёртка .list-group.
+     На десктопе в ds-page обёртки нет → items сливаются с фоном.
+     Делаем каждый item отдельной карточкой. */
+  .ds-page .list-item,
+  .ds-page-body .list-item {
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    margin-bottom: 8px;
+    border-bottom: none !important;
+    padding: 14px 16px;
+  }
+  .ds-page .list-item:hover,
+  .ds-page-body .list-item:hover {
+    background: #F9F9FB;
+  }
+
+  /* ── Белый фон для всех форм-полей на десктопе ─────────── */
+  /* Vanilla .form-input имеет background: var(--bg) (серый), что на
+     мобиле хорошо — контраст с белой карточкой. На десктопе часто
+     поле ввода само стоит на сером фоне (например .ds-page на var(--bg))
+     и инпут сливается. Делаем белый фон с лёгкой обводкой. */
+  .form-input,
+  .form-textarea,
+  .form-select,
+  input.form-input,
+  textarea.form-textarea,
+  select.form-select {
+    background: var(--card) !important;
+    border: 1px solid var(--border) !important;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .form-input:focus,
+  .form-textarea:focus,
+  .form-select:focus {
+    border-color: var(--blue) !important;
+    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12) !important;
+  }
+}
+
