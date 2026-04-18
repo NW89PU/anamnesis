@@ -1,4 +1,16 @@
+<div align="center">
+
+<img src="docs/assets/hero.png" alt="Anamnesis" width="640" />
+
 # Anamnesis
+
+**AI-coordinated medical records tracker**
+
+**English** • [Русский](README.ru.md)
+
+</div>
+
+---
 
 > AI-coordinated medical records tracker — a personal health PWA where an AI assistant does the heavy lifting of data entry, structuring, and cross-referencing, while you just scan documents and talk to it in plain language.
 
@@ -204,6 +216,16 @@ Not accepted: features that change the core model (e.g. "make it cloud-hosted", 
 ## License
 
 MIT, see [LICENSE](LICENSE). Not a medical device.
+
+## Screenshots
+
+Demo-patient UI (fresh install, before connecting an AI coordinator):
+
+<p align="center">
+  <img src="docs/assets/visit-form.jpg" alt="Create visit form (desktop + mobile)" width="800" />
+</p>
+
+More screenshots will be added as the public version matures. For now, see the live UI by running `npm run dev`.
 
 ## Author
 
