@@ -16,6 +16,14 @@
 
 **Status**: early release. Functional, self-hosted, single-family scale.
 
+### Background
+
+The philosophy, motivation, and real findings behind this project are described in a long-form article by the author (in Russian):
+
+**→ [Как я построил медицинский трекер здоровья семьи с Claude AI в роли координатора](https://habr.com/ru/articles/1022450/)** *(Habr, 2026)*
+
+If you want the "why" before the "how", read the article first. This README focuses on the "how".
+
 ---
 
 ## What is this?
@@ -219,13 +227,51 @@ MIT, see [LICENSE](LICENSE). Not a medical device.
 
 ## Screenshots
 
-Demo-patient UI (fresh install, before connecting an AI coordinator):
+These screenshots come from the author's real instance and are reused here with permission. The same UI renders on any instance — the data you see is specific to that family, but the structure and interactions are identical for everyone.
 
-<p align="center">
-  <img src="docs/assets/visit-form.jpg" alt="Create visit form (desktop + mobile)" width="800" />
-</p>
+### Dashboard — overview with AI summary
+Stats, active diagnoses, current medications, critical errors, upcoming reminders, AI-generated summary. Red = priorities, orange = to monitor, blue = context.
+<p align="center"><img src="docs/assets/dashboard.jpg" alt="Dashboard" width="900" /></p>
 
-More screenshots will be added as the public version matures. For now, see the live UI by running `npm run dev`.
+### Plan & Errors
+Treatment and examination plan with priorities (urgent / important / routine). Medical errors and anomalies surfaced by AI after cross-referencing.
+<p align="center"><img src="docs/assets/plan-and-errors.jpg" alt="Plan and errors" width="900" /></p>
+
+### Health graph — relationships
+Cytoscape-powered graph of connections between diagnoses, doctors, medications, tests, and visits. Click a node to drill down.
+<p align="center"><img src="docs/assets/health-graph.jpg" alt="Health graph" width="900" /></p>
+
+### Visits & documents
+Chronology of doctor appointments, each with attached documents (PDFs, scans), audio transcriptions, and AI analysis of the specialist's performance.
+<p align="center"><img src="docs/assets/visits.jpg" alt="Visits timeline" width="900" /></p>
+
+### Visit transcription + AI analysis
+Raw transcription pasted from NotebookLM, AI's structured analysis of the visit (doctor's competence, completeness, adherence to guidelines), user comments.
+<p align="center"><img src="docs/assets/transcription.jpg" alt="Transcription + AI analysis" width="900" /></p>
+
+### Create visit form
+Structured entry for a new visit with specialist picker, document upload, NotebookLM transcription slot.
+<p align="center"><img src="docs/assets/visit-form.jpg" alt="Create visit form" width="900" /></p>
+
+### Lab results — grouped by test
+Test panels grouped by name + date, with expiry badges (how fresh the result is), anomaly counts, drill-down to individual parameters with reference ranges.
+<p align="center"><img src="docs/assets/lab-results.jpg" alt="Lab results" width="900" /></p>
+
+### Change history — automatic per-patient
+Every edit — by user or by AI — is captured via 40 SQLite triggers into `audit_log` and rendered as a human-readable feed. Tap a card to jump to the source entity.
+<p align="center"><img src="docs/assets/change-history.jpg" alt="Change history" width="900" /></p>
+
+### Security — multi-factor auth
+Face ID / Touch ID / Windows Hello (WebAuthn), PIN, trusted devices list with last-active and IP, security question for new-device flow, one-click "log out everywhere except this".
+<p align="center"><img src="docs/assets/security.jpg" alt="Security panel" width="900" /></p>
+
+### Backups — three-tier strategy
+Hot snapshots every 6h + encrypted daily archives (AES-256-CBC / PBKDF2) + offsite copy to Telegram. Works offline-resilient; survives VPS loss.
+<p align="center"><img src="docs/assets/backups-telegram.jpg" alt="Backup strategy" width="900" /></p>
+
+### Beyond pediatrics — multi-patient checkup plan
+The same system scales to adults. Here: a comprehensive checkup plan generated for the author after cross-referencing age-appropriate screening guidelines.
+<p align="center"><img src="docs/assets/adult-checkup-plan.jpg" alt="Adult checkup plan" width="900" /></p>
 
 ## Author
 
