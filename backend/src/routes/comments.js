@@ -39,13 +39,15 @@ router.get('/', async (req, res) => {
 // POST /api/comments
 router.post('/', async (req, res) => {
   try {
-    const { entity_type, entity_id, text } = req.body;
+    const { entity_type, entity_id, text, author } = req.body;
     if (!entity_type || entity_id == null || !text) {
       return res.status(400).json({ error: 'entity_type, entity_id, text required' });
     }
+    // author опционально: 'user' (default) или 'ai' — для AI-координатора
+    const authorValue = author === 'ai' ? 'ai' : 'user';
     const { rows } = await pool.query(
-      'INSERT INTO comments (entity_type, entity_id, text, patient_id) VALUES ($1, $2, $3, $4) RETURNING *',
-      [entity_type, entity_id, text, req.patientId]
+      'INSERT INTO comments (entity_type, entity_id, text, author, patient_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [entity_type, entity_id, text, authorValue, req.patientId]
     );
     res.status(201).json(rows[0]);
   } catch (err) {

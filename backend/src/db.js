@@ -21,6 +21,7 @@ db.exec(`
 `);
 
 // Add missing columns to existing tables
+try { db.exec('ALTER TABLE comments ADD COLUMN author TEXT DEFAULT \'user\''); } catch(e) {}
 try { db.exec('ALTER TABLE medical_errors ADD COLUMN detail TEXT'); } catch(e) {}
 try { db.exec('ALTER TABLE plan ADD COLUMN detail TEXT'); } catch(e) {}
 try { db.exec('ALTER TABLE medical_errors ADD COLUMN advice TEXT'); } catch(e) {}
@@ -689,6 +690,34 @@ for (const pid of [1, 2, 3, 4]) {
       "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)"
     ).run(`last_ai_review_at_${pid}`, '1970-01-01 00:00:00');
   } catch (e) {}
+}
+
+// ── v3.13 comments.author backfill для ai_chat ──────────────────
+// История: раньше comments не имели поля author — AI-ответы от вопросов
+// отличались только контекстуально (чередование user/ai в хронологии).
+// Добавили колонку author (default 'user'). Для существующих ai_chat
+// сообщений выполняем однократный backfill: в хронологическом порядке
+// чётные (0,2,4...) = вопросы пользователя, нечётные (1,3,5...) = ответы AI.
+// Флаг в app_settings предохраняет от повторного выполнения.
+try {
+  const already = db.prepare("SELECT value FROM app_settings WHERE key = 'ai_chat_author_backfilled'").get();
+  if (!already) {
+    db.exec(`
+      UPDATE comments
+      SET author = 'ai'
+      WHERE entity_type = 'ai_chat'
+        AND id IN (
+          SELECT id FROM (
+            SELECT id, (ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC)) AS rn
+            FROM comments WHERE entity_type = 'ai_chat'
+          )
+          WHERE (rn - 1) % 2 = 1
+        );
+    `);
+    db.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?)").run('ai_chat_author_backfilled', '1');
+  }
+} catch (e) {
+  console.error('[db] ai_chat author backfill failed:', e.message);
 }
 
 // ── v3.9 sessions таблица — переезд с in-memory Map в БД ─────

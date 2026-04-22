@@ -5,5 +5,7 @@ export interface Comment {
   entity_type: string;
   entity_id: number;
   text: string;
+  /** 'user' (по умолчанию, от человека) или 'ai' (от AI-координатора) */
+  author?: 'user' | 'ai';
   created_at: ISODateString;
 }
