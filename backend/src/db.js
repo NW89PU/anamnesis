@@ -860,6 +860,52 @@ try {
 // PIN хранится как хеш — если БД утечёт, PIN не восстановить.
 // Ключ: 'pin_hash_{pid}'. Если отсутствует — берём из APP_PIN .env (legacy).
 
+// ── v4.0 users + multi-user auth ────────────────────────────
+// Модель: 1 user = 1 patient (свой data silo). email — единственный
+// идентификатор для login. password_hash — scrypt (тот же что PIN).
+// role: 'admin' имеет доступ к admin-tools и админ-секциям;
+//       'user' — обычный друг с доступом к своему patient.
+// ai_enabled — gate для AI-фич (transcription, summarize, ai-review).
+//   По умолчанию 0 — AI выдаётся вручную через UPDATE users SET ai_enabled=1.
+//
+// Линковка с существующими таблицами:
+//   - patient_id FK → patient(id): у каждого user строго один patient,
+//     все его записи (visits, diagnoses, labs, …) уже scoped по patient_id.
+//   - sessions.user_id (nullable): новые login-password сессии имеют user_id.
+//     Legacy PIN-сессии остаются без user_id — резолвятся через patient_id
+//     по старой схеме (нужно для backward compat пока не мигрируем тебя).
+//   - auth_log.user_id — для аудита кто именно входил/выходил.
+//
+// Backfill admin-юзера происходит в отдельной миграции при старте
+// сервиса (см. services/auth-session.js или init-users.js), не здесь —
+// здесь только схема.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    patient_id INTEGER NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin','user')),
+    ai_enabled INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_login_at TEXT,
+    FOREIGN KEY (patient_id) REFERENCES patient(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+  CREATE INDEX IF NOT EXISTS idx_users_patient ON users(patient_id);
+`);
+
+// sessions.user_id — связь session → user. Nullable для legacy PIN-сессий.
+// Когда session создаётся через POST /api/auth/login-password,
+// user_id заполняется и patientIdMiddleware резолвит patient через users.
+try { db.exec('ALTER TABLE sessions ADD COLUMN user_id INTEGER'); } catch(e) {}
+db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)');
+
+// auth_log.user_id — аудит. NULL для до-multi-user событий и для anonymous
+// событий (login_fail когда юзера ещё не нашли).
+try { db.exec('ALTER TABLE auth_log ADD COLUMN user_id INTEGER'); } catch(e) {}
+db.exec('CREATE INDEX IF NOT EXISTS idx_auth_log_user ON auth_log(user_id)');
+
 // ── PostgreSQL compatibility wrapper ────────────────────────
 
 const pool = {

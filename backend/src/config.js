@@ -20,4 +20,21 @@ module.exports = {
   // Хранить ОТДЕЛЬНО (в password manager), не путать с ADMIN_TOKEN.
   BACKUP_ENCRYPTION_KEY: process.env.BACKUP_ENCRYPTION_KEY || '',
   NODE_ENV: process.env.NODE_ENV || 'production',
+
+  // ─── Cloudflare Access (опционально — outer auth gate) ─────
+  // Заполняется при включении Zero Trust → Access → Application для
+  // этого домена. Когда оба заданы, backend валидирует Cf-Access-Jwt-Assertion
+  // header на всех запросах. Когда оба пустые — pass-through (off).
+  // CF_ACCESS_TEAM_DOMAIN: '<team>.cloudflareaccess.com' (без https://)
+  // CF_ACCESS_AUD: hex-tag из CF application settings (Audience tag)
+  CF_ACCESS_TEAM_DOMAIN: process.env.CF_ACCESS_TEAM_DOMAIN || '',
+  CF_ACCESS_AUD: process.env.CF_ACCESS_AUD || '',
+
+  // ─── First admin (миграция при первом старте с пустой users) ──
+  // Если ANAMNESIS_ADMIN_EMAIL + ANAMNESIS_ADMIN_PASSWORD заданы
+  // и таблица users пуста — создаётся admin-юзер, привязанный к
+  // patient(id=1). Только для первого деплоя multi-user; после миграции
+  // переменные можно удалить (хеш уже в БД).
+  ANAMNESIS_ADMIN_EMAIL: process.env.ANAMNESIS_ADMIN_EMAIL || '',
+  ANAMNESIS_ADMIN_PASSWORD: process.env.ANAMNESIS_ADMIN_PASSWORD || '',
 };

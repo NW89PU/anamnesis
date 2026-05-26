@@ -10,6 +10,7 @@ const telegram = require('./services/telegram');
 const authSession = require('./services/auth-session');
 const { authMiddleware, adminAuthMiddleware } = require('./middleware/auth');
 const { patientIdMiddleware } = require('./middleware/patientId');
+const { cfAccessMiddleware } = require('./middleware/cf-access');
 const { rawDb } = require('./db');
 
 const patientRoutes = require('./routes/patient');
@@ -84,6 +85,13 @@ app.use('/api/auth/change-pin', authLimiter);
 app.use('/api/webauthn/login/verify', authLimiter);
 app.use('/api/admin/tools/sql', sqlLimiter);
 app.use('/api/', apiLimiter);
+
+// CF Access middleware — валидирует Cf-Access-Jwt-Assertion если включён.
+// Off by default (нет CF_ACCESS_TEAM_DOMAIN/AUD в .env) → pass-through.
+// Когда включён — кладёт req.cfEmail. Используется в /api/auth/register
+// как trusted источник email-а. Подключаем ДО session-middleware чтобы
+// доступно везде downstream.
+app.use('/api/', cfAccessMiddleware);
 
 app.use('/uploads', express.static(config.UPLOAD_DIR));
 
