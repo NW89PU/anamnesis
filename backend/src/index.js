@@ -704,14 +704,23 @@ app.use('/api/', (req, res, next) => {
     req.path === '/webauthn/available' ||
     req.path === '/health'
   ) return next();
-  // Dev mode — нет ни .env PIN ни хеша
-  if (!config.APP_PIN && !authSession.getStoredPinHash(1)) return next();
+  // Сначала пробуем подтянуть session — даже в dev-mode мы хотим
+  // привязать req.user/req.session чтобы patientIdMiddleware смог
+  // правильно изолировать non-admin user-ов. Раньше dev-mode возвращал
+  // next() ДО session lookup и multi-user isolation ломалась в dev.
   const token = req.headers['x-session-token'] || req.query.token;
   const sess = authSession.getSession(token);
   if (sess) {
     authSession.touchSession(token, clientIp(req));
+    req.session = sess;
+    if (sess.user_id) {
+      const user = authSession.getUserById(sess.user_id);
+      if (user) req.user = user;
+    }
     return next();
   }
+  // Dev mode — нет PIN и нет session: пропускаем без авторизации
+  if (!config.APP_PIN && !authSession.getStoredPinHash(1)) return next();
   return res.status(401).json({ error: 'Требуется авторизация' });
 });
 
