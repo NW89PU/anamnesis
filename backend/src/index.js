@@ -80,6 +80,8 @@ const sqlLimiter = rateLimit({
 });
 
 app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/login-password', authLimiter);
+app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/verify-device', authLimiter);
 app.use('/api/auth/change-pin', authLimiter);
 app.use('/api/webauthn/login/verify', authLimiter);
@@ -486,11 +488,214 @@ app.post('/api/auth/change-pin', (req, res) => {
   }
 });
 
+// ── v4.0 login/password + register (multi-user) ─────────────
+//
+// Параллельные endpoint-ы к PIN-flow:
+//   POST /api/auth/login-password — email + password → session (с user_id)
+//   POST /api/auth/register       — email из CF Access JWT + password
+//                                   → создаётся patient + user + session
+//   GET  /api/me                  — текущий user (id, email, role, ai_enabled,
+//                                   patient_id). 401 если нет session.
+//
+// PIN-flow выше остаётся работать без изменений (legacy + per-device
+// fast-path). На фронте позже добавим LoginScreen как основной экран,
+// PIN перейдёт в Settings как опция.
+
+app.post('/api/auth/login-password', (req, res) => {
+  const { email, password } = req.body || {};
+  const ip = clientIp(req);
+  const ua = userAgent(req);
+  const deviceId = req.headers['x-device-id'] || req.body?.device_id || null;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'email и password обязательны' });
+  }
+
+  try {
+    // Backoff: тот же механизм что и для PIN. Ключ ip+device_id;
+    // юзера ещё не нашли, поэтому patient_id передаём null.
+    const lockout = authSession.checkLockout(ip, deviceId);
+    if (lockout.locked) {
+      authSession.logAuthEvent('login_pwd_locked', ip, ua, {
+        email, device_id: deviceId, remaining_ms: lockout.remainingMs,
+      });
+      return res.status(429).json({
+        error: 'Слишком много попыток. Попробуйте позже.',
+        locked_until: new Date(Date.now() + lockout.remainingMs).toISOString(),
+        remaining_sec: Math.ceil(lockout.remainingMs / 1000),
+        attempts: lockout.attempts,
+      });
+    }
+
+    const user = authSession.findUserByEmail(email);
+    // ВАЖНО: одинаковый ответ для «нет такого email» и «неверный password»,
+    // чтобы не превращать форму в user enumeration oracle.
+    if (!user || !authSession.verifyPassword(password, user.password_hash)) {
+      const newLockout = authSession.recordAuthFailure(ip, deviceId, user?.patient_id || null);
+      authSession.logAuthEvent('login_pwd_fail', ip, ua, {
+        email, attempts: newLockout.attempts,
+        reason: user ? 'wrong_password' : 'unknown_email',
+      });
+      return res.status(401).json({
+        error: 'Неверный email или пароль',
+        attempts: newLockout.attempts,
+        next_lockout_sec: newLockout.locked ? Math.ceil(newLockout.remainingMs / 1000) : 0,
+      });
+    }
+
+    // Успех. Регистрируем device как trusted (для password-юзеров пока
+    // без security question — это PIN-фича).
+    if (deviceId) {
+      try {
+        authSession.registerDevice(deviceId, user.patient_id, null, ip, ua);
+      } catch (regErr) {
+        if (regErr.status === 403) {
+          authSession.logAuthEvent('login_pwd_blocked_revoked', ip, ua, {
+            user_id: user.id, device_id: deviceId,
+          });
+          return res.status(403).json({
+            error: 'Это устройство было отозвано владельцем.',
+            device_revoked: true,
+          });
+        }
+        throw regErr;
+      }
+    }
+
+    const token = authSession.createSession(user.patient_id, ip, ua, deviceId, user.id);
+    authSession.resetAuthFailures(ip, deviceId);
+    authSession.updateLastLogin(user.id);
+    authSession.logAuthEvent('login_pwd_success', ip, ua, {
+      user_id: user.id, email: user.email,
+    });
+
+    res.json({
+      token,
+      expires_days: authSession.SESSION_MAX_AGE_DAYS,
+      user: {
+        id: user.id, email: user.email, role: user.role,
+        ai_enabled: !!user.ai_enabled, patient_id: user.patient_id,
+      },
+    });
+  } catch (err) {
+    console.error('[auth] login-password error:', err);
+    res.status(500).json({ error: 'Ошибка авторизации' });
+  }
+});
+
+app.post('/api/auth/register', (req, res) => {
+  // Регистрация ТОЛЬКО за Cloudflare Access — email берётся из доверенного
+  // JWT (req.cfEmail), юзер задаёт лишь password. Без CF Access registration
+  // отключена (нет identity-provider для whitelist «друзей»).
+  if (!req.cfEmail) {
+    return res.status(403).json({
+      error: 'Регистрация доступна только через Cloudflare Access. ' +
+             'Если вы видите это сообщение и должны иметь доступ — обратитесь к админу.',
+    });
+  }
+
+  const { password, full_name, date_of_birth, gender } = req.body || {};
+  const ip = clientIp(req);
+  const ua = userAgent(req);
+
+  if (!password || String(password).length < 8) {
+    return res.status(400).json({ error: 'Пароль должен быть не короче 8 символов' });
+  }
+
+  // Защита от двойной регистрации
+  const existing = authSession.findUserByEmail(req.cfEmail);
+  if (existing) {
+    return res.status(409).json({
+      error: 'Пользователь с этим email уже зарегистрирован. Войдите по паролю.',
+    });
+  }
+
+  try {
+    // Создаём новый patient + user в одной транзакции — если что-то падает,
+    // не остаётся ни осиротевшего patient ни висящего user.
+    const txn = rawDb.transaction(() => {
+      const p = rawDb.prepare(
+        'INSERT INTO patient (full_name, date_of_birth, gender) VALUES (?, ?, ?)'
+      ).run(
+        String(full_name || req.cfEmail.split('@')[0]).slice(0, 200),
+        date_of_birth || null,
+        gender || null
+      );
+      const patientId = Number(p.lastInsertRowid);
+      const user = authSession.createUser({
+        email: req.cfEmail,
+        password,
+        patient_id: patientId,
+        role: 'user',         // обычный юзер, не admin
+        ai_enabled: 0,         // AI выдаётся вручную UPDATE-ом
+      });
+      return { user, patientId };
+    });
+
+    const { user, patientId } = txn();
+    const deviceId = req.headers['x-device-id'] || null;
+    const token = authSession.createSession(patientId, ip, ua, deviceId, user.id);
+    authSession.updateLastLogin(user.id);
+    authSession.logAuthEvent('register_success', ip, ua, {
+      user_id: user.id, email: user.email, patient_id: patientId,
+    });
+
+    res.status(201).json({
+      token,
+      expires_days: authSession.SESSION_MAX_AGE_DAYS,
+      user: {
+        id: user.id, email: user.email, role: user.role,
+        ai_enabled: !!user.ai_enabled, patient_id: user.patient_id,
+      },
+    });
+  } catch (err) {
+    console.error('[auth] register error:', err);
+    if (err.message?.includes('UNIQUE')) {
+      return res.status(409).json({ error: 'email уже зарегистрирован' });
+    }
+    res.status(500).json({ error: 'Ошибка регистрации' });
+  }
+});
+
+app.get('/api/me', (req, res) => {
+  const token = req.headers['x-session-token'];
+  const sess = authSession.getSession(token);
+  if (!sess) return res.status(401).json({ error: 'Требуется авторизация' });
+
+  // Если сессия создана через login-password — есть user_id, возвращаем
+  // полный профиль. Если legacy PIN-сессия без user_id — возвращаем минимум
+  // на основе patient_id (для совместимости с текущим UI на проде).
+  if (sess.user_id) {
+    const user = authSession.getUserById(sess.user_id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    return res.json({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      ai_enabled: !!user.ai_enabled,
+      patient_id: user.patient_id,
+      last_login_at: user.last_login_at,
+      auth_method: 'password',
+    });
+  }
+  // legacy PIN-сессия
+  res.json({
+    id: null,
+    email: null,
+    role: 'admin',      // легаси PIN = admin (это твоя единственная сессия)
+    ai_enabled: true,
+    patient_id: sess.patient_id,
+    auth_method: 'pin',
+  });
+});
+
 // Session middleware — protect all API routes except auth
 app.use('/api/', (req, res, next) => {
   // Skip auth endpoints which are themselves authentication
   if (
     req.path === '/auth/login' ||
+    req.path === '/auth/login-password' ||
+    req.path === '/auth/register' ||
     req.path === '/auth/check' ||
     req.path === '/auth/logout' ||
     req.path === '/auth/verify-device' ||
@@ -581,6 +786,13 @@ app.use((err, req, res, _next) => {
 
 const server = app.listen(config.PORT, () => {
   console.log(`Сервер запущен: http://localhost:${config.PORT}`);
+
+  // One-shot users миграция — создаст admin-юзера на patient 1, если:
+  //   - таблица users пустая (первый старт multi-user версии)
+  //   - И ANAMNESIS_ADMIN_EMAIL + ANAMNESIS_ADMIN_PASSWORD в .env заданы
+  // Иначе пропускает с warning — legacy PIN-flow продолжает работать.
+  authSession.backfillFirstAdminIfNeeded(config);
+
   initScheduler();
   initBackupScheduler();
 
