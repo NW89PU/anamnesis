@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Navigate, useLocation } from 'react-router';
-import { useAuth } from './AuthContext';
+import { useAuth } from './useAuth';
 
 /**
  * Guard-компонент: пропускает только аутентифицированных пользователей.
@@ -31,7 +31,10 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   }
 
   if (status === 'unauthenticated') {
-    return <Navigate to="/pin" replace state={{ from: location.pathname }} />;
+    // v4.0: основной экран входа — /login (email + password).
+    // PIN-screen остаётся доступен из /login как fast-path для тех,
+    // кто уже привязал устройство (PIN/WebAuthn).
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
 
   return <>{children}</>;

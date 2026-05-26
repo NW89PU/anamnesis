@@ -657,6 +657,20 @@ app.post('/api/auth/register', (req, res) => {
   }
 });
 
+// CF Access status — фронт спрашивает чтобы показать правильный UI:
+//   - cf_enabled=true + cf_email=null  → CF на, но юзер не залогинен в CF
+//     (странный случай, бывает при прямом доступе через Tailscale)
+//   - cf_enabled=true + cf_email='...' → CF на, юзер залогинен; Register
+//     показывает email, нельзя его поменять, остаётся ввести пароль
+//   - cf_enabled=false                  → CF off; Register показывает
+//     «регистрация недоступна, обратитесь к админу»
+app.get('/api/auth/cf-status', (req, res) => {
+  res.json({
+    cf_enabled: !!(config.CF_ACCESS_TEAM_DOMAIN && config.CF_ACCESS_AUD),
+    cf_email: req.cfEmail || null,
+  });
+});
+
 app.get('/api/me', (req, res) => {
   const token = req.headers['x-session-token'];
   const sess = authSession.getSession(token);
@@ -696,6 +710,7 @@ app.use('/api/', (req, res, next) => {
     req.path === '/auth/login' ||
     req.path === '/auth/login-password' ||
     req.path === '/auth/register' ||
+    req.path === '/auth/cf-status' ||
     req.path === '/auth/check' ||
     req.path === '/auth/logout' ||
     req.path === '/auth/verify-device' ||

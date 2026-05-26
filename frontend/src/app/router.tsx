@@ -2,6 +2,8 @@ import { createBrowserRouter, Navigate } from 'react-router';
 import { AppShell } from '@/shared/layout/AppShell';
 import { RequireAuth } from '@/shared/auth/RequireAuth';
 import { PinScreen } from '@/shared/auth/PinScreen';
+import { LoginScreen } from '@/shared/auth/LoginScreen';
+import { RegisterScreen } from '@/shared/auth/RegisterScreen';
 
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { PlanPage } from '@/features/plan/PlanPage';
@@ -40,6 +42,8 @@ const basename = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
  */
 export const router = createBrowserRouter(
   [
+    { path: '/login', Component: LoginScreen },
+    { path: '/register', Component: RegisterScreen },
     { path: '/pin', Component: PinScreen },
     {
       path: '/',

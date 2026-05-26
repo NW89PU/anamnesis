@@ -14,7 +14,7 @@ import { Button } from '@/shared/ui/Button';
 import { api } from '@/shared/api/client';
 import { EP } from '@/shared/api/endpoints';
 import { getSession } from '@/shared/auth/session';
-import { useAuth } from '@/shared/auth/AuthContext';
+import { useAuth } from '@/shared/auth/useAuth';
 import { haptic } from '@/shared/lib/haptic';
 import { ApiError } from '@/shared/api/errors';
 import WebAuthnSection from './SecurityWebAuthnSection';

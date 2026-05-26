@@ -10,7 +10,11 @@
 export const EP = {
   // ── Auth ──────────────────────────────────
   authCheck: '/auth/check',
-  authLogin: '/auth/login',
+  authLogin: '/auth/login',                       // PIN-based (legacy + per-device fast-path)
+  authLoginPassword: '/auth/login-password',      // v4.0 email + password
+  authRegister: '/auth/register',                 // v4.0 регистрация (требует CF Access)
+  authCfStatus: '/auth/cf-status',                // v4.0 включён ли CF + детектированный email
+  authMe: '/me',                                  // v4.0 текущий user (id, email, role, ai_enabled)
   authLogout: '/auth/logout',
   authLogoutAll: '/auth/logout-all',
   authChangePin: '/auth/change-pin',

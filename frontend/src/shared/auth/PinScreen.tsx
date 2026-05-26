@@ -4,7 +4,7 @@ import { IconBackspace, IconShield, IconFingerprint } from '@tabler/icons-react'
 import { startAuthentication, browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import { api } from '@/shared/api/client';
 import { EP } from '@/shared/api/endpoints';
-import { useAuth } from './AuthContext';
+import { useAuth } from './useAuth';
 import { recordFailure, recordSuccess, getLockoutStatus } from './rate-limit';
 import { haptic } from '@/shared/lib/haptic';
 import { ApiError } from '@/shared/api/errors';
