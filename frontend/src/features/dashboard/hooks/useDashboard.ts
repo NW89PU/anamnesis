@@ -9,10 +9,16 @@ export function useDashboard() {
   });
 }
 
-export function useAiSummary() {
+/**
+ * @param opts.enabled — пропуск запроса. Используется когда AI-фичи
+ *   отключены для текущего юзера (users.ai_enabled=0) — нет смысла
+ *   тянуть пустой summary и засорять логи.
+ */
+export function useAiSummary(opts: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: qk.dashboardAiSummary,
     queryFn: fetchAiSummary,
     retry: false,
+    enabled: opts.enabled !== false,
   });
 }

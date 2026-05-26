@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
-import { IconBrain, IconSend, IconMessageChatbot } from '@tabler/icons-react';
+import { IconBrain, IconSend, IconMessageChatbot, IconAlertCircle } from '@tabler/icons-react';
 import { Modal, Button, Textarea, EmptyState, Spinner } from '@/shared/ui';
 import { useComments, useAddComment } from '@/features/comments/useComments';
+import { useMe } from '@/shared/auth/useAuth';
 import type { Comment } from '@/shared/types';
 
 /**
@@ -184,9 +185,30 @@ function WaitingBlock() {
 // ─── Главный компонент ────────────────────────────────────────
 
 export default function AiChatSheet() {
+  const me = useMe();
+  const aiEnabled = !me || me.ai_enabled;
   const [text, setText] = useState('');
-  const { data: comments = [], isLoading } = useComments('ai_chat', 0);
+  const { data: comments = [], isLoading } = useComments('ai_chat', 0, { enabled: aiEnabled });
   const addMutation = useAddComment('ai_chat', 0);
+
+  // Если AI отключён — показываем заглушку. Защитный экран на случай
+  // прямого открытия URL /more/ai-chat несмотря на скрытый пункт меню.
+  if (!aiEnabled) {
+    return (
+      <Modal title="AI чат">
+        <div style={{ padding: 24, textAlign: 'center' }}>
+          <IconAlertCircle size={48} color="var(--orange)" style={{ marginBottom: 12 }} />
+          <h3 style={{ fontSize: 18, marginBottom: 8, color: 'var(--text)' }}>
+            AI-функции отключены
+          </h3>
+          <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            AI-чат недоступен для вашего аккаунта. Обратитесь к администратору,
+            если считаете, что эта функция должна быть включена.
+          </p>
+        </div>
+      </Modal>
+    );
+  }
 
   const pairs = useMemo(() => buildPairs(comments), [comments]);
 

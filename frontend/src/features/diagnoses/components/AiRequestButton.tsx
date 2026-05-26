@@ -1,5 +1,6 @@
 import { IconBrain, IconClock } from '@tabler/icons-react';
 import { usePendingAiRequests, useCreateAiRequest } from '../hooks/useDiagnoses';
+import { useMe } from '@/shared/auth/useAuth';
 
 interface Props {
   entityType: string;
@@ -10,13 +11,21 @@ interface Props {
  * Кнопка запроса AI-анализа. Порт из vanilla `diagnoses.js:52-97`.
  *
  * Логика:
+ * - Если у юзера ai_enabled=false (не разрешён AI) → null (кнопки нет)
  * - Если в pending AI-requests уже есть запись для этой сущности → показываем «Отправлено»
  * - Иначе → кнопка «Запросить AI-анализ»
  * - После клика → мутация createAiRequest → list инвалидируется → появляется «Отправлено»
  */
 export function AiRequestButton({ entityType, entityId }: Props) {
+  const me = useMe();
   const { data: pending } = usePendingAiRequests();
   const mutation = useCreateAiRequest();
+
+  // AI отключён для этого юзера — не показываем кнопку. Бэкенд тоже
+  // защищён (requireAiEnabled на POST /api/ai-requests) — это лишь UX.
+  // me=null значит сессия ещё грузится, либо это legacy PIN без user_id
+  // (в этом случае ai_enabled=true по дизайну /api/me fallback).
+  if (me && !me.ai_enabled) return null;
 
   const alreadyPending =
     (pending ?? []).some((r) => r.entity_type === entityType && r.entity_id === entityId) ||

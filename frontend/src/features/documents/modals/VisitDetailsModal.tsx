@@ -20,6 +20,7 @@ import { DocumentBlock } from '../components/DocumentBlock';
 import { CommentsSection } from '@/features/comments/CommentsSection';
 import { CATEGORY_LABELS } from '../lib/doc-helpers';
 import { haptic } from '@/shared/lib/haptic';
+import { useMe } from '@/shared/auth/useAuth';
 import type { Timeline } from '@/shared/types';
 
 /**
@@ -45,6 +46,8 @@ export default function VisitDetailsModal() {
   const visit = fromList ?? fromItem;
 
   // AI request state
+  const me = useMe();
+  const aiEnabled = !me || me.ai_enabled;  // null user (загрузка/legacy) = разрешено
   const requestAi = useCreateTimelineAiRequest();
   const { data: pendingAi } = usePendingAiRequests();
   const hasAiPending =
@@ -294,7 +297,7 @@ export default function VisitDetailsModal() {
             Добавить расшифровку
           </Button>
         )}
-        {!visit.ai_assessment && (
+        {aiEnabled && !visit.ai_assessment && (
           <Button
             size="sm"
             icon={hasAiPending || requestAi.isSuccess ? <IconClock size={14} /> : <IconBrain size={14} />}

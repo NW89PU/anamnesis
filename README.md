@@ -203,15 +203,32 @@ Full API is documented in `AI_COORDINATOR_GUIDE.md`.
 
 ## Security model
 
-- **6-digit PIN** (scrypt-hashed) for login
-- **WebAuthn biometry** (Face ID / Touch ID / Windows Hello) as fast-path after first PIN login
-- **Device trust**: new devices require a security word (registered during first-run setup)
-- **Server-side exponential backoff**: 3 failures → 1 min lockout → 2 min → 4 min → ... capped at 24 h
-- **Sessions in SQLite** (14-day sliding expiry, IP + UA tracking, revocation)
-- **Rate limits**: 20 req/15min on auth, 60 req/min on admin SQL, 1000 req/15min on general API
-- **Strict file upload validation**: MIME whitelist + double extension check, SVG rejected, 50 MB max
-- **AES-256-CBC / PBKDF2** encryption for daily backup archives
-- **Systemd hardening** (non-root user, ProtectSystem, ProtectKernel*, RestrictSUIDSGID, etc.)
+### Authentication (v4.0 — multi-user)
+
+- **Email + password** (`POST /api/auth/login-password`) as primary login. Same scrypt hashing as PIN.
+- **Per-user data isolation**: each user is bound to exactly one patient via FK. `req.patientId` is resolved from `users.patient_id` server-side; non-admin users cannot override via the `X-Patient-Id` header (silently ignored).
+- **Role gating**: `role='admin'` keeps the cross-patient override and admin-tools API; `role='user'` is locked to their own patient.
+- **AI feature gating**: `users.ai_enabled` controls who can create AI requests and use AI chat. Backend enforces via `requireAiEnabled` middleware on `POST /api/ai-requests`; frontend hides the corresponding buttons.
+- **Registration** is gated behind Cloudflare Access — `POST /api/auth/register` only accepts requests where CF Access populated a verified email JWT. Without CF, registration returns 403.
+
+### Authentication (legacy, still supported)
+
+- **6-digit PIN** (scrypt-hashed) as per-device fast-path. Available at `/pin` after the first login.
+- **WebAuthn biometry** (Face ID / Touch ID / Windows Hello) as fast-path on devices that registered a passkey.
+- **Device trust**: new devices require a security word the first time they log in via PIN.
+- **Server-side exponential backoff**: 3 failures → 1 min lockout → 2 min → 4 min → ... capped at 24 h.
+- **Sessions in SQLite** (14-day sliding expiry, IP + UA tracking, revocation, optional `user_id` link for multi-user sessions).
+
+### Outer layer (optional)
+
+- **Cloudflare Access** — when `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` are set, `Cf-Access-Jwt-Assertion` is validated against CF JWKS (cached 1 h) on every request. Use it as the "friends only" outer gate by email whitelist; in-app login still happens inside.
+
+### Network and hardening
+
+- **Rate limits**: 20 req/15min on auth, 60 req/min on admin SQL, 1000 req/15min on general API.
+- **Strict file upload validation**: MIME whitelist + double extension check, SVG rejected, 50 MB max.
+- **AES-256-CBC / PBKDF2** encryption for daily backup archives.
+- **Systemd hardening** (non-root user, ProtectSystem, ProtectKernel*, RestrictSUIDSGID, etc.).
 
 See `DEPLOY.md` for the full hardening guide.
 

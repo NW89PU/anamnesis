@@ -223,15 +223,32 @@ anamnesis/
 
 ## Модель безопасности
 
-- **6-значный PIN**, хешируется через scrypt
-- **WebAuthn-биометрия** (Face ID / Touch ID / Windows Hello) как fast-path после первого входа по PIN
-- **Device trust**: новое устройство требует контрольное слово (задаётся при первичной настройке)
-- **Серверный exponential backoff**: 3 ошибки → блок 1 мин → 2 → 4 → ... до 24 ч
-- **Сессии в SQLite** (14 дней sliding expiry, логирование IP и User-Agent, возможность ревокации)
-- **Rate limits**: 20 req/15мин на auth, 60 req/мин на admin SQL, 1000 req/15мин на общий API
-- **Строгая валидация загрузок**: whitelist MIME + проверка расширения, SVG запрещён, до 50 МБ
-- **AES-256-CBC/PBKDF2** для ежедневных encrypted-архивов
-- **Systemd hardening** (non-root, ProtectSystem, ProtectKernel*, RestrictSUIDSGID)
+### Аутентификация (v4.0 — multi-user)
+
+- **Email + password** (`POST /api/auth/login-password`) — основной вход. Тот же scrypt-хеш, что и для PIN.
+- **Изоляция данных по пациентам**: каждый user строго привязан к одному patient через FK. Бэкенд резолвит `req.patientId` из `users.patient_id`; обычный user не может подменить через заголовок `X-Patient-Id` (молча игнорируется).
+- **Роли**: `role='admin'` сохраняет override через header и доступ к admin-tools API; `role='user'` заперт на собственного пациента.
+- **AI-фичи под флагом**: `users.ai_enabled` контролирует, кто может создавать AI-запросы и пользоваться AI-чатом. Бэк защищает через middleware `requireAiEnabled` на `POST /api/ai-requests`; фронт скрывает соответствующие кнопки.
+- **Регистрация** доступна только за Cloudflare Access — `POST /api/auth/register` принимает запрос, только если CF Access прокинул проверенный email через JWT. Без CF — 403.
+
+### Аутентификация (legacy, остаётся рабочей)
+
+- **6-значный PIN** (scrypt-хеш) как per-device fast-path. Доступен из `/login` по ссылке «Войти по PIN».
+- **WebAuthn-биометрия** (Face ID / Touch ID / Windows Hello) на устройствах, где зарегистрирован passkey.
+- **Device trust**: новое устройство при PIN-входе требует контрольное слово.
+- **Серверный exponential backoff**: 3 ошибки → блок 1 мин → 2 → 4 → ... до 24 ч.
+- **Сессии в SQLite** (14 дней sliding expiry, IP+UA логирование, ревокация, опциональный `user_id` для multi-user-сессий).
+
+### Внешний слой (опционально)
+
+- **Cloudflare Access** — если в `.env` заданы `CF_ACCESS_TEAM_DOMAIN` и `CF_ACCESS_AUD`, бэкенд валидирует `Cf-Access-Jwt-Assertion` через CF JWKS (кеш 1 ч) на каждом запросе. Идеален как внешний whitelist «только друзей» по email; in-app login остаётся внутри.
+
+### Сеть и hardening
+
+- **Rate limits**: 20 req/15мин на auth, 60 req/мин на admin SQL, 1000 req/15мин на общий API.
+- **Строгая валидация загрузок**: whitelist MIME + проверка расширения, SVG запрещён, до 50 МБ.
+- **AES-256-CBC/PBKDF2** для ежедневных encrypted-архивов.
+- **Systemd hardening** (non-root, ProtectSystem, ProtectKernel*, RestrictSUIDSGID).
 
 Подробности по развёртыванию безопасной инсталляции — в [`DEPLOY.md`](DEPLOY.md).
 

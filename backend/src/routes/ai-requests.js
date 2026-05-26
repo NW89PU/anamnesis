@@ -1,5 +1,6 @@
 const { Router } = require('express');
 const pool = require('../db');
+const { requireAiEnabled } = require('../middleware/auth');
 
 const router = Router();
 
@@ -28,8 +29,11 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST /api/ai-requests — create a new request
-router.post('/', async (req, res) => {
+// POST /api/ai-requests — create a new request.
+// Защищено requireAiEnabled: только юзеры с users.ai_enabled=1 могут
+// триггерить AI-обработку (контроль costs / privacy для friends).
+// Legacy PIN-сессии без user_id пропускаются как admin (это владелец).
+router.post('/', requireAiEnabled, async (req, res) => {
   try {
     const { entity_type, entity_id } = req.body;
     if (!entity_type || !entity_id) {

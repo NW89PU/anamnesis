@@ -3,10 +3,18 @@ import { qk } from '@/shared/api/keys';
 import { fetchComments, addComment, deleteComment } from './api';
 import { haptic } from '@/shared/lib/haptic';
 
-export function useComments(entityType: string, entityId: number) {
+/**
+ * @param opts.enabled — пропуск запроса (например когда AI-чат отключён).
+ */
+export function useComments(
+  entityType: string,
+  entityId: number,
+  opts: { enabled?: boolean } = {}
+) {
   return useQuery({
     queryKey: qk.comments(entityType, entityId),
     queryFn: () => fetchComments({ entity_type: entityType, entity_id: entityId, order: 'desc' }),
+    enabled: opts.enabled !== false,
   });
 }
 

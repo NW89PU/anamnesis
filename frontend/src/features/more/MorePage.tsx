@@ -24,6 +24,7 @@ import { fetchVersion } from './api';
 import { haptic } from '@/shared/lib/haptic';
 import { getSession } from '@/shared/auth/session';
 import { useIsDesktop } from '@/shared/hooks/useMediaQuery';
+import { useMe } from '@/shared/auth/useAuth';
 
 /**
  * Главная страница раздела «Ещё» — меню со всеми подразделами.
@@ -59,8 +60,13 @@ export function MorePage() {
   const navigate = useNavigate();
   const location = useLocation();
   const isDesktop = useIsDesktop();
+  const me = useMe();
+  const aiEnabled = !me || me.ai_enabled;
   const { data: dashboard } = useDashboard();
   const { data: version } = useQuery({ queryKey: qk.version, queryFn: fetchVersion, retry: false });
+
+  // Фильтруем меню: AI чат скрыт когда users.ai_enabled=0
+  const visibleMenu = MENU.filter((item) => item.id !== 'ai-chat' || aiEnabled);
 
   // На десктопе раздел «Ещё» не нужен — всё уже в sidebar.
   if (isDesktop) {
@@ -95,7 +101,7 @@ export function MorePage() {
       </div>
 
       <div className="list-group">
-        {MENU.map((item) => {
+        {visibleMenu.map((item) => {
           const IconComp = item.icon;
           return (
             <button

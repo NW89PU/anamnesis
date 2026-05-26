@@ -11,6 +11,7 @@ import { DiagnosesSection } from './components/DiagnosesSection';
 import { MedicationsSection } from './components/MedicationsSection';
 import { RemindersSection } from './components/RemindersSection';
 import { DetailSheet } from './components/DetailSheet';
+import { useMe } from '@/shared/auth/useAuth';
 import type { Diagnosis, Medication, MedicalError, Reminder } from '@/shared/types';
 
 /**
@@ -36,7 +37,11 @@ type DetailEntity =
 
 export function DashboardPage() {
   const { data, isLoading, error, refetch, isRefetching } = useDashboard();
-  const { data: aiSummary } = useAiSummary();
+  const me = useMe();
+  const aiEnabled = !me || me.ai_enabled;
+  // useAiSummary() запрашиваем только если AI разрешён — иначе пустой
+  // запрос лишний (и засоряет логи 200-ми ответами с null summary)
+  const { data: aiSummary } = useAiSummary({ enabled: aiEnabled });
   const [detail, setDetail] = useState<DetailEntity | null>(null);
 
   if (isLoading && !data) {
@@ -92,7 +97,7 @@ export function DashboardPage() {
         onSelect={(r) => setDetail({ type: 'reminder', data: r })}
       />
 
-      <AiSummarySection data={aiSummary} />
+      {aiEnabled && <AiSummarySection data={aiSummary} />}
 
       <DiagnosesSection
         diagnoses={data.active_diagnoses}

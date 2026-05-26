@@ -25,6 +25,7 @@ import { qk } from '@/shared/api/keys';
 import { fetchDashboard } from '@/features/dashboard/api';
 import { haptic } from '@/shared/lib/haptic';
 import { getSession } from '@/shared/auth/session';
+import { useMe } from '@/shared/auth/useAuth';
 import { PatientSwitcher } from './PatientSwitcher';
 
 /**
@@ -86,6 +87,11 @@ export function Sidebar() {
   });
   const location = useLocation();
   const stats = dashboard?.stats;
+  const me = useMe();
+  const aiEnabled = !me || me.ai_enabled;
+  // AI чат скрывается если ai_enabled=0. Делается через filter а не
+  // условный рендер чтобы не плодить дубль массива в JSX.
+  const toolsGroup = TOOLS_GROUP.filter((item) => item.to !== '/more/ai-chat' || aiEnabled);
 
   // Вычисляем badge для каждого пункта
   const getBadge = (key?: NavItemDef['badgeKey']) => {
@@ -146,7 +152,7 @@ export function Sidebar() {
         ))}
 
         <div className="ds-nav-section-title">Инструменты</div>
-        {TOOLS_GROUP.map((item) => {
+        {toolsGroup.map((item) => {
           if (item.action === 'export-pdf') {
             return (
               <button
