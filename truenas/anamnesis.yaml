@@ -1,0 +1,43 @@
+# Paste this into TrueNAS SCALE: Apps → Discover Apps → Custom App.
+# Adjust paths if your dataset is not /mnt/ssd/apps/anamnesis.
+#
+# Before deploying, on the server:
+#   sudo zfs create -p ssd/apps/anamnesis
+#   sudo mkdir -p /mnt/ssd/apps/anamnesis/{data,uploads,config}
+#   sudo chown -R 568:568 /mnt/ssd/apps/anamnesis    # apps group on TrueNAS
+#   sudo install -m 600 -o 568 -g 568 anamnesis.env /mnt/ssd/apps/anamnesis/config/anamnesis.env
+
+services:
+  backend:
+    image: ghcr.io/nw89pu/anamnesis-backend:latest
+    restart: unless-stopped
+    user: "568:568"
+    environment:
+      NODE_ENV: production
+      PORT: "3010"
+      DATABASE_URL: /data/anamnesis.db
+      UPLOAD_DIR: /uploads
+    env_file:
+      - /mnt/ssd/apps/anamnesis/config/anamnesis.env
+    volumes:
+      - /mnt/ssd/apps/anamnesis/data:/data
+      - /mnt/ssd/apps/anamnesis/uploads:/uploads
+    ports:
+      - "10.0.1.10:3013:3010"
+    networks:
+      - anamnesis
+
+  frontend:
+    image: ghcr.io/nw89pu/anamnesis-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "10.0.1.10:8090:80"
+    networks:
+      - anamnesis
+
+networks:
+  anamnesis:
+    driver: bridge

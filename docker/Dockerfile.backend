@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+
+# ---------- deps: install npm dependencies, compile better-sqlite3 native module ----------
+FROM node:22-alpine AS deps
+WORKDIR /app/backend
+
+RUN apk add --no-cache python3 make g++
+
+COPY backend/package.json backend/package-lock.json* ./
+RUN npm ci --omit=dev
+
+# ---------- runtime ----------
+FROM node:22-alpine
+WORKDIR /app/backend
+
+RUN apk add --no-cache poppler-utils tini wget
+
+COPY --from=deps /app/backend/node_modules ./node_modules
+COPY backend/ ./
+
+COPY docker/backend-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENV NODE_ENV=production \
+    PORT=3010 \
+    DATABASE_URL=/data/anamnesis.db \
+    UPLOAD_DIR=/uploads
+
+EXPOSE 3010
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:3010/api/health || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]
