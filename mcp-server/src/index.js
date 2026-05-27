@@ -14,8 +14,10 @@
 //   MCP_HOST            — bind interface (default 0.0.0.0, в проде указать Tailscale IP)
 
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 const ANAMNESIS_URL = process.env.ANAMNESIS_URL || 'http://localhost:3010';
@@ -92,8 +94,19 @@ function err(message) {
 }
 
 // ─── MCP Server + tools ────────────────────────────────────
+//
+// We build a fresh McpServer per incoming session because the McpServer/Server
+// pair holds per-session state (initialization flags, pending request maps,
+// onmessage/send wired into a single transport). Tool definitions themselves
+// are stateless so we just re-register them.
 
-const server = new McpServer({ name: 'anamnesis', version: '0.1.0' });
+function buildServer() {
+  const server = new McpServer({ name: 'anamnesis', version: '0.1.0' });
+  registerTools(server);
+  return server;
+}
+
+function registerTools(server) {
 
 // Context (caller identity) is passed via extra.requestInfo headers
 // (Streamable HTTP transport sets it). We extract once per tool call.
@@ -503,6 +516,8 @@ server.registerTool(
   }
 );
 
+} // end registerTools
+
 // ─── Bearer-auth + transport mount ─────────────────────────
 
 const app = express();
@@ -521,19 +536,50 @@ app.use('/mcp', (req, res, next) => {
   next();
 });
 
-// Stateless mode — sessionIdGenerator: undefined. Без этого SDK работает
-// в stateful mode и требует session ID на втором request (notifications/initialized
-// от Claude шлётся без id → 500). Для нашего use case (каждый tool call
-// независимый, runner создаёт новый mcp-config per request) stateless норм.
-const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-await server.connect(transport);
+// Stateful per-session mode. The SDK's stateless mode forbids reusing one
+// transport across requests (throws "Stateless transport cannot be reused"),
+// so we keep a session-id → transport map. Claude sends `initialize` first
+// without a session id, we mint one, return it via `Mcp-Session-Id`, and
+// route every subsequent JSON-RPC on the same session id back to the same
+// transport. When the session closes we drop it from the map.
+const transports = new Map();
 
-// All MCP traffic flows through /mcp (POST for messages, GET for SSE).
 app.all('/mcp', async (req, res) => {
   const ts = new Date().toISOString();
-  const sid = req.headers['mcp-session-id'] || '-';
-  console.log(`[mcp ${ts}] ${req.method} /mcp method=${req.body?.method || '-'} id=${req.body?.id ?? '-'} session=${sid} body=${JSON.stringify(req.body).slice(0, 300)}`);
+  const sidHeader = req.headers['mcp-session-id'];
+  const method = req.body?.method || '-';
+  const id = req.body?.id ?? '-';
+  console.log(`[mcp ${ts}] ${req.method} /mcp method=${method} id=${id} session=${sidHeader || '-'} body=${JSON.stringify(req.body).slice(0, 300)}`);
+
   try {
+    let transport;
+    if (sidHeader && transports.has(sidHeader)) {
+      transport = transports.get(sidHeader);
+    } else if (req.method === 'POST' && !sidHeader && isInitializeRequest(req.body)) {
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => {
+          transports.set(sid, transport);
+          console.log(`[mcp ${ts}] session initialized: ${sid}`);
+        },
+      });
+      transport.onclose = () => {
+        if (transport.sessionId) {
+          transports.delete(transport.sessionId);
+          console.log(`[mcp ${ts}] session closed: ${transport.sessionId}`);
+        }
+      };
+      const mcp = buildServer();
+      await mcp.connect(transport);
+    } else {
+      res.status(400).json({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Bad Request: no valid session id (and not an initialize request)' },
+        id: null,
+      });
+      return;
+    }
+
     await transport.handleRequest(req, res, req.body);
     console.log(`[mcp ${ts}] handled OK, headersSent=${res.headersSent}, statusCode=${res.statusCode}`);
   } catch (e) {

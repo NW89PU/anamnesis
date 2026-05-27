@@ -1,7 +1,16 @@
-# Runner + MCP stack — current status (paused mid-Stage D)
+# Runner + MCP stack — current status (Stage D unblocked)
 
 This document captures where the MCP/Runner integration left off so the
 next session can pick it up without re-deriving everything.
+
+> **2026-05-27 update — Stage D blocker fixed locally.** Root cause was
+> in the SDK: `WebStandardStreamableHTTPServerTransport.handleRequest`
+> *throws* on the second request when `sessionIdGenerator` is undefined
+> (literal error: `"Stateless transport cannot be reused across requests.
+> Create a new transport per request."`). We switched to stateful mode
+> with a `sessionId → transport` map. Local handshake verified:
+> `initialize → 200 + Mcp-Session-Id`, `notifications/initialized → 202`,
+> `tools/list → 200` (19 tools). Needs deploy + Claude end-to-end check.
 
 ## What works
 
