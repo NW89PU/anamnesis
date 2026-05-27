@@ -531,7 +531,8 @@ await server.connect(transport);
 // All MCP traffic flows through /mcp (POST for messages, GET for SSE).
 app.all('/mcp', async (req, res) => {
   const ts = new Date().toISOString();
-  console.log(`[mcp ${ts}] ${req.method} /mcp from ${req.ip} ua=${req.headers['user-agent'] || '-'} ct=${req.headers['content-type'] || '-'} accept=${req.headers['accept'] || '-'} body-keys=${req.body ? Object.keys(req.body).join(',') : 'none'}`);
+  const sid = req.headers['mcp-session-id'] || '-';
+  console.log(`[mcp ${ts}] ${req.method} /mcp method=${req.body?.method || '-'} id=${req.body?.id ?? '-'} session=${sid} body=${JSON.stringify(req.body).slice(0, 300)}`);
   try {
     await transport.handleRequest(req, res, req.body);
     console.log(`[mcp ${ts}] handled OK, headersSent=${res.headersSent}, statusCode=${res.statusCode}`);
