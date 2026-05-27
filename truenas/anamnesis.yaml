@@ -38,6 +38,27 @@ services:
     networks:
       - anamnesis
 
+  # MCP server — exposes Anamnesis as MCP tools for Claude Code on Win VM.
+  # Bind to Tailscale IP только (100.100.10.10 = TrueNAS в tailnet).
+  # Никакого публичного интернета — только Claude через Tailscale-туннель.
+  mcp:
+    image: ghcr.io/nw89pu/anamnesis-mcp:latest
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      MCP_PORT: "7800"
+      MCP_HOST: "0.0.0.0"   # bind inside container, host port restricted via ports:
+      ANAMNESIS_URL: http://backend:3010
+    env_file:
+      - /mnt/ssd/apps/anamnesis/config/anamnesis.env
+    ports:
+      - "100.100.10.10:7800:7800"   # ТОЛЬКО Tailscale IP TrueNAS
+    networks:
+      - anamnesis
+
 networks:
   anamnesis:
     driver: bridge

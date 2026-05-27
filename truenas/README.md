@@ -42,9 +42,10 @@ TrueNAS UI → **Apps → Discover Apps → Custom App**
 - Paste the contents of `anamnesis.yaml` into the Custom Compose YAML field
 - Save
 
-The app will pull the two images from `ghcr.io/nw89pu/anamnesis-backend:latest` and `…-frontend:latest`, mount the dataset, run init-db on first start, and listen on:
+The app will pull the three images from `ghcr.io/nw89pu/anamnesis-{backend,frontend,mcp}:latest`, mount the dataset, run init-db on first start, and listen on:
 - `10.0.1.10:3013` — backend (internal, used only for debugging)
 - `10.0.1.10:8090` — frontend (proxies /api and /uploads to the backend service via docker network)
+- `100.100.10.10:7800` — MCP server (Tailscale only — exposes Anamnesis as MCP tools for Claude Code on the Win VM)
 
 ## 4. Nginx Proxy Manager
 
