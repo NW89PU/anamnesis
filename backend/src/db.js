@@ -763,127 +763,38 @@ try {
   }
 } catch (e) {}
 
-// ── v3.14 WebAuthn credentials (Face ID / Touch ID / Windows Hello) ──
-// Platform authenticator passkeys — биометрия устройства.
-// Привязываются к device_id (один device может иметь 1 credential).
-// При аутентификации credential_id + signature проверяются через
-// @simplewebauthn/server. Public key хранится как base64url.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS webauthn_credentials (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    patient_id INTEGER NOT NULL DEFAULT 1,
-    device_id TEXT NOT NULL,
-    credential_id TEXT NOT NULL UNIQUE,   -- base64url — стабильный идентификатор credential
-    public_key TEXT NOT NULL,              -- base64url COSE public key
-    counter INTEGER NOT NULL DEFAULT 0,    -- signCounter для replay protection
-    transports TEXT,                       -- JSON массив: internal/usb/nfc/ble/hybrid
-    backed_up INTEGER DEFAULT 0,           -- 1 если credential синхронизируется (iCloud Keychain)
-    device_type TEXT,                      -- singleDevice / multiDevice
-    nickname TEXT,                         -- label для UI "Face ID iPhone 14"
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_used_at TEXT,
-    FOREIGN KEY (patient_id) REFERENCES patient(id) ON DELETE CASCADE
-  );
-  CREATE INDEX IF NOT EXISTS idx_webauthn_patient ON webauthn_credentials(patient_id);
-  CREATE INDEX IF NOT EXISTS idx_webauthn_device ON webauthn_credentials(device_id);
-  CREATE INDEX IF NOT EXISTS idx_webauthn_credid ON webauthn_credentials(credential_id);
-`);
-
 // ── v3.16 sessions.device_id ─────────────────────────────
-// Добавляем связь session → device. Нужно чтобы при revokeDevice()
-// можно было ревокировать ВСЕ сессии этого устройства одним запросом.
-// Без этого ревокация устройства не выкидывает существующую сессию —
-// юзер продолжает пользоваться приложением до истечения 14-дневного
-// срока. Это был critical security bug.
+// Связь session → device для аудита (раньше использовалось revokeDevice;
+// в v4.1 device_id просто пишется в session record как diagnostic).
 try { db.exec('ALTER TABLE sessions ADD COLUMN device_id TEXT'); } catch(e) {}
 db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_device ON sessions(device_id)');
 
-// ── v3.11 known_devices + security questions ─────────────────
-// Device trust: при логине с нового устройства (неизвестный device_id)
-// требуется ответ на секретный вопрос. На доверенном — не требуется.
-// device_id генерируется на клиенте (crypto.randomUUID), хранится в
-// localStorage, передаётся в X-Device-Id header.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS known_devices (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id TEXT NOT NULL,
-    patient_id INTEGER NOT NULL DEFAULT 1,
-    label TEXT,                              -- "iPhone", "Work laptop", user-provided
-    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_ip TEXT,
-    user_agent TEXT,
-    revoked INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(device_id, patient_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_devices_patient ON known_devices(patient_id);
-  CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON known_devices(last_seen_at);
-`);
+// ── v4.1 cleanup: drop tables PIN/WebAuthn/device-trust эпохи ──
+// webauthn_credentials, known_devices, auth_lockouts — больше не
+// используются (PIN/WebAuthn выкинуты в v4.1, identity делает CF Access).
+// IF EXISTS — миграция идемпотентна на fresh DB.
+db.exec('DROP TABLE IF EXISTS webauthn_credentials');
+db.exec('DROP TABLE IF EXISTS known_devices');
+db.exec('DROP TABLE IF EXISTS auth_lockouts');
 
-// ── v3.12 app_settings: security_question + answer_hash per patient ─
-// security_question_{pid} — текст вопроса (для показа пользователю)
-// security_answer_hash_{pid} — scrypt хеш нормализованного ответа
-// security_setup_at_{pid} — когда настроено (чтобы показать "настрой ещё раз")
-// Не создаём автоматически — появляются когда юзер настраивает через API.
-
-// ── v3.13 auth_lockouts — экспоненциальный backoff ──────────
-// Ключ: IP + device_id (или просто IP если device_id нет).
-// attempts — счётчик последовательных неудач (PIN или answer).
-// locked_until — до какого момента следующая попытка запрещена.
-// Формула: lockout_minutes = 2^(attempts - 3), cap 24ч.
-// attempts 1-2 — без локаута, 3+ — экспоненциальный backoff.
-// Сбрасывается при успешном входе.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS auth_lockouts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    lockout_key TEXT NOT NULL UNIQUE,     -- 'ip:device_id' или 'ip:-'
-    ip TEXT,
-    device_id TEXT,
-    patient_id INTEGER,
-    attempts INTEGER NOT NULL DEFAULT 0,
-    last_fail_at TEXT,
-    locked_until TEXT,                     -- null если не залочен
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_lockouts_key ON auth_lockouts(lockout_key);
-  CREATE INDEX IF NOT EXISTS idx_lockouts_until ON auth_lockouts(locked_until);
-`);
-
-// Периодическая чистка старых записей lockout (старше 30 дней без активности)
+// Cleanup app_settings: ключи PIN/security-question/pending-challenge.
+// На fresh DB их нет, на старых — удаляем dead-state.
 try {
   db.prepare(
-    "DELETE FROM auth_lockouts WHERE updated_at < datetime('now','-30 days')"
+    "DELETE FROM app_settings WHERE key LIKE 'pin_hash_%' " +
+    "OR key LIKE 'security_question_%' OR key LIKE 'security_answer_hash_%' " +
+    "OR key LIKE 'security_setup_at_%' OR key LIKE 'pending_challenge_%'"
   ).run();
-} catch (e) {}
+} catch (e) { /* */ }
 
-// ── v3.10 app_settings: hashed PIN (Argon2id) ───────────────
-// PIN хранится как хеш — если БД утечёт, PIN не восстановить.
-// Ключ: 'pin_hash_{pid}'. Если отсутствует — берём из APP_PIN .env (legacy).
-
-// ── v4.0 users + multi-user auth ────────────────────────────
-// Модель: 1 user = 1 patient (свой data silo). email — единственный
-// идентификатор для login. password_hash — scrypt (тот же что PIN).
-// role: 'admin' имеет доступ к admin-tools и админ-секциям;
-//       'user' — обычный друг с доступом к своему patient.
-// ai_enabled — gate для AI-фич (transcription, summarize, ai-review).
-//   По умолчанию 0 — AI выдаётся вручную через UPDATE users SET ai_enabled=1.
-//
-// Линковка с существующими таблицами:
-//   - patient_id FK → patient(id): у каждого user строго один patient,
-//     все его записи (visits, diagnoses, labs, …) уже scoped по patient_id.
-//   - sessions.user_id (nullable): новые login-password сессии имеют user_id.
-//     Legacy PIN-сессии остаются без user_id — резолвятся через patient_id
-//     по старой схеме (нужно для backward compat пока не мигрируем тебя).
-//   - auth_log.user_id — для аудита кто именно входил/выходил.
-//
-// Backfill admin-юзера происходит в отдельной миграции при старте
-// сервиса (см. services/auth-session.js или init-users.js), не здесь —
-// здесь только схема.
-// v4.1: users.patient_id и password_hash — legacy колонки (1:1 модель
-// v4.0 заменена на 1:N через patient.owner_user_id). NOT NULL остаются
-// только потому что SQLite drop column болезненный. Записывается мусор
-// (0 для patient_id, '' для password_hash). FK на patient убран — на
-// fresh DB не применится; на старых DB остаётся, но мы туда не пишем.
+// ── v4.1 users (Google-only via CF Access) ──────────────────
+// Идентификатор — email из CF Access JWT (см. findOrCreateUserFromCfEmail).
+// role: 'admin' (соответствует ANAMNESIS_ADMIN_EMAIL) или 'user'.
+// ai_enabled — gate для AI-фич, выставляется вручную UPDATE-ом.
+// password_hash и patient_id — legacy колонки (1:1 модель v4.0). Оставлены
+// в схеме чтобы не делать table-recreate dance (SQLite DROP COLUMN не
+// дружит с NOT NULL без default). Код их не читает и не пишет;
+// фактическая связь user→patient теперь через patient.owner_user_id (1:N).
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -898,9 +809,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 `);
 
-// sessions.user_id — связь session → user. Nullable для legacy PIN-сессий.
-// Когда session создаётся через POST /api/auth/login-password,
-// user_id заполняется и patientIdMiddleware резолвит patient через users.
+// sessions.user_id — связь session → user, nullable. v4.1: всегда заполнен
+// при cf-bootstrap. patientIdMiddleware смотрит на req.user для ownership.
 try { db.exec('ALTER TABLE sessions ADD COLUMN user_id INTEGER'); } catch(e) {}
 db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)');
 
