@@ -1,0 +1,13 @@
+{
+  "name": "anamnesis-runner",
+  "version": "0.1.0",
+  "description": "HTTP service on Win VM that spawns Claude Code with Anamnesis MCP config",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.1"
+  }
+}
