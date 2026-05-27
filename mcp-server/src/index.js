@@ -521,10 +521,11 @@ app.use('/mcp', (req, res, next) => {
   next();
 });
 
-// One persistent transport in stateless mode (no session tracking — each
-// Claude tool call is independent). connect() registers the server's
-// request handlers on the transport.
-const transport = new StreamableHTTPServerTransport({});
+// Stateless mode — sessionIdGenerator: undefined. Без этого SDK работает
+// в stateful mode и требует session ID на втором request (notifications/initialized
+// от Claude шлётся без id → 500). Для нашего use case (каждый tool call
+// независимый, runner создаёт новый mcp-config per request) stateless норм.
+const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 await server.connect(transport);
 
 // All MCP traffic flows through /mcp (POST for messages, GET for SSE).
