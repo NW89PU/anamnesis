@@ -529,10 +529,13 @@ await server.connect(transport);
 
 // All MCP traffic flows through /mcp (POST for messages, GET for SSE).
 app.all('/mcp', async (req, res) => {
+  const ts = new Date().toISOString();
+  console.log(`[mcp ${ts}] ${req.method} /mcp from ${req.ip} ua=${req.headers['user-agent'] || '-'} ct=${req.headers['content-type'] || '-'} accept=${req.headers['accept'] || '-'} body-keys=${req.body ? Object.keys(req.body).join(',') : 'none'}`);
   try {
     await transport.handleRequest(req, res, req.body);
+    console.log(`[mcp ${ts}] handled OK, headersSent=${res.headersSent}, statusCode=${res.statusCode}`);
   } catch (e) {
-    console.error('[mcp] transport error:', e);
+    console.error(`[mcp ${ts}] transport error:`, e.message, e.stack);
     if (!res.headersSent) res.status(500).json({ error: e.message });
   }
 });
