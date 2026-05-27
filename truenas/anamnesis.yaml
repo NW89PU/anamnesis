@@ -55,7 +55,7 @@ services:
     env_file:
       - /mnt/ssd/apps/anamnesis/config/anamnesis.env
     ports:
-      - "100.100.10.10:7800:7800"   # ТОЛЬКО Tailscale IP TrueNAS
+      - "100.100.11.11:7800:7800"   # ТОЛЬКО Tailscale IP TrueNAS
     networks:
       - anamnesis
 
