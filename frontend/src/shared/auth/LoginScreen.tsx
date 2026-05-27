@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router';
-import { IconShieldLock, IconMail, IconLock, IconUserPlus } from '@tabler/icons-react';
+import { IconMail, IconLock, IconUserPlus, IconFingerprint } from '@tabler/icons-react';
+import { startAuthentication, browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import { api } from '@/shared/api/client';
 import { EP } from '@/shared/api/endpoints';
 import { useAuth } from './useAuth';
@@ -43,8 +44,25 @@ export function LoginScreen() {
   const [remainingSec, setRemainingSec] = useState(0);
   const [cfEmail, setCfEmail] = useState<string | null>(null);
   const [cfEnabled, setCfEnabled] = useState(false);
+  const [webauthnAvailable, setWebauthnAvailable] = useState(false);
 
   const from = (location.state as { from?: string } | null)?.from ?? '/dashboard';
+
+  // Проверяем доступна ли биометрия на этом устройстве + зарегистрирован
+  // ли passkey на сервере. Если нет — кнопку «Face ID» не показываем.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!browserSupportsWebAuthn()) return;
+      try {
+        const resp = await api.get<{ available: boolean }>(EP.webauthnAvailable);
+        if (!cancelled) setWebauthnAvailable(resp.available === true);
+      } catch {
+        // fail silently — биометрия опциональна
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Если за CF Access и email детектирован — предзаполняем поле.
   // Юзеру всё равно нужно ввести пароль, но email не приходится печатать.
@@ -124,6 +142,34 @@ export function LoginScreen() {
     },
     [email, password, submitting, lockedUntil, login, navigate, from]
   );
+
+  const tryWebAuthn = useCallback(async () => {
+    if (!webauthnAvailable || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const options = await api.get(EP.webauthnLoginOptions);
+      haptic('light');
+      const assertion = await startAuthentication({
+        optionsJSON: options as Parameters<typeof startAuthentication>[0]['optionsJSON'],
+      });
+      const data = await api.post<{ token: string }>(EP.webauthnLoginVerify, { response: assertion });
+      if (!data.token) throw new ApiError('Нет токена', 500);
+      await login(data.token);
+      haptic('success');
+      navigate(from, { replace: true });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'NotAllowedError') {
+        // Юзер отменил Face ID prompt — без ошибки
+        setError(null);
+      } else {
+        haptic('error');
+        setError(err instanceof ApiError ? err.message : 'Ошибка биометрии');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }, [webauthnAvailable, submitting, login, navigate, from]);
 
   const isLocked = !!lockedUntil && remainingSec > 0;
   const canSubmit = !submitting && !isLocked && email.trim().length > 0 && password.length > 0;
@@ -287,6 +333,34 @@ export function LoginScreen() {
           {submitting ? 'Входим…' : isLocked ? `Подождите ${remainingSec}с` : 'Войти'}
         </button>
 
+        {webauthnAvailable && (
+          <button
+            type="button"
+            onClick={tryWebAuthn}
+            disabled={submitting}
+            style={{
+              width: '100%',
+              padding: '12px 16px',
+              borderRadius: 12,
+              border: '1px solid var(--border)',
+              background: 'var(--card)',
+              color: 'var(--text)',
+              fontSize: 15,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: submitting ? 'not-allowed' : 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              marginTop: 4,
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >
+            <IconFingerprint size={18} /> Войти по биометрии
+          </button>
+        )}
+
         {cfEnabled && (
           <Link
             to="/register"
@@ -309,26 +383,6 @@ export function LoginScreen() {
             Зарегистрироваться
           </Link>
         )}
-
-        <Link
-          to="/pin"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 6,
-            padding: '10px',
-            borderRadius: 12,
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-            fontSize: 13,
-            textDecoration: 'none',
-            marginTop: 4,
-          }}
-        >
-          <IconShieldLock size={16} />
-          Войти по PIN или биометрии
-        </Link>
       </form>
     </div>
   );

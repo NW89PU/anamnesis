@@ -18,6 +18,7 @@ import {
   IconHistory,
   IconFileExport,
   IconShieldLock,
+  IconLogout,
   type Icon,
 } from '@tabler/icons-react';
 import clsx from 'clsx';
@@ -25,7 +26,7 @@ import { qk } from '@/shared/api/keys';
 import { fetchDashboard } from '@/features/dashboard/api';
 import { haptic } from '@/shared/lib/haptic';
 import { getSession } from '@/shared/auth/session';
-import { useMe } from '@/shared/auth/useAuth';
+import { useMe, useAuth } from '@/shared/auth/useAuth';
 import { PatientSwitcher } from './PatientSwitcher';
 
 /**
@@ -88,10 +89,16 @@ export function Sidebar() {
   const location = useLocation();
   const stats = dashboard?.stats;
   const me = useMe();
+  const { logout } = useAuth();
   const aiEnabled = !me || me.ai_enabled;
   // AI чат скрывается если ai_enabled=0. Делается через filter а не
   // условный рендер чтобы не плодить дубль массива в JSX.
   const toolsGroup = TOOLS_GROUP.filter((item) => item.to !== '/more/ai-chat' || aiEnabled);
+
+  const handleLogout = async () => {
+    haptic('light');
+    await logout();
+  };
 
   // Вычисляем badge для каждого пункта
   const getBadge = (key?: NavItemDef['badgeKey']) => {
@@ -176,6 +183,26 @@ export function Sidebar() {
           );
         })}
       </nav>
+
+      <button
+        type="button"
+        onClick={handleLogout}
+        className="ds-nav-item"
+        style={{
+          width: '100%',
+          background: 'transparent',
+          border: 'none',
+          color: 'var(--red)',
+          cursor: 'pointer',
+          fontFamily: 'inherit',
+          textAlign: 'left',
+          marginTop: 'auto',
+        }}
+        title={me?.email ? `Выйти (${me.email})` : 'Выйти'}
+      >
+        <IconLogout size={18} />
+        <span>Выйти</span>
+      </button>
 
       <div className="ds-sidebar-footer">Версия 2.0</div>
     </aside>

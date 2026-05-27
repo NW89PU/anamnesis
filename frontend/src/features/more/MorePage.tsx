@@ -15,6 +15,7 @@ import {
   IconChevronRight,
   IconHistory,
   IconShieldLock,
+  IconLogout,
 } from '@tabler/icons-react';
 import { PageContainer } from '@/shared/layout/PageContainer';
 import { PatientCard } from '@/features/dashboard/components/PatientCard';
@@ -24,7 +25,7 @@ import { fetchVersion } from './api';
 import { haptic } from '@/shared/lib/haptic';
 import { getSession } from '@/shared/auth/session';
 import { useIsDesktop } from '@/shared/hooks/useMediaQuery';
-import { useMe } from '@/shared/auth/useAuth';
+import { useMe, useAuth } from '@/shared/auth/useAuth';
 
 /**
  * Главная страница раздела «Ещё» — меню со всеми подразделами.
@@ -61,9 +62,17 @@ export function MorePage() {
   const location = useLocation();
   const isDesktop = useIsDesktop();
   const me = useMe();
+  const { logout } = useAuth();
   const aiEnabled = !me || me.ai_enabled;
   const { data: dashboard } = useDashboard();
   const { data: version } = useQuery({ queryKey: qk.version, queryFn: fetchVersion, retry: false });
+
+  const handleLogout = async () => {
+    haptic('light');
+    await logout();  // чистит локальный session_token + бэк ревокирует через /auth/logout.
+    // RequireAuth подхватит status='unauthenticated' и автоматически кинет на /login.
+    // CF Access cookie оставляем — следующий вход без Google re-auth (один клик).
+  };
 
   // Фильтруем меню: AI чат скрыт когда users.ai_enabled=0
   const visibleMenu = MENU.filter((item) => item.id !== 'ai-chat' || aiEnabled);
@@ -132,6 +141,32 @@ export function MorePage() {
           );
         })}
       </div>
+
+      <button
+        type="button"
+        onClick={handleLogout}
+        style={{
+          width: '100%',
+          marginTop: 20,
+          padding: '14px 16px',
+          borderRadius: 12,
+          background: 'rgba(255,59,48,0.08)',
+          border: '1px solid rgba(255,59,48,0.18)',
+          color: 'var(--red)',
+          fontSize: 15,
+          fontWeight: 600,
+          fontFamily: 'inherit',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          WebkitTapHighlightColor: 'transparent',
+        }}
+      >
+        <IconLogout size={18} /> Выйти
+        {me?.email ? <span style={{ opacity: 0.6, fontWeight: 400 }}> · {me.email}</span> : null}
+      </button>
 
       {version && (
         <div
