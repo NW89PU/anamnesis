@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1.7
+
+# Anamnesis Claude Runner — Node service spawning `claude -p` in container.
+#
+# OAuth credentials (MAX subscription) live in /home/runner/.claude — mount
+# this as a Docker volume so they persist across container restarts. One-time
+# setup after first deploy:
+#   docker exec -it ix-anamnesis-runner-1 claude login
+# (Opens device-code URL — open it on your laptop browser, authorize, tokens
+# saved to the mounted volume.)
+
+FROM node:22-alpine
+
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code
+
+# Non-root user (matches TrueNAS apps uid:gid for volume permissions)
+RUN addgroup -g 568 -S runner && \
+    adduser -u 568 -G runner -h /home/runner -s /bin/sh -D runner
+
+WORKDIR /app
+
+# Runner deps
+COPY runner/package.json runner/package-lock.json* ./
+RUN npm ci --omit=dev
+
+# Runner code
+COPY runner/ ./
+
+# Persistent storage for Claude OAuth credentials + sessions
+RUN mkdir -p /home/runner/.claude /home/runner/.anamnesis-runner && \
+    chown -R runner:runner /home/runner /app
+
+USER runner
+ENV HOME=/home/runner
+ENV RUNNER_PORT=7900
+ENV RUNNER_HOST=0.0.0.0
+ENV CLAUDE_BIN=claude
+ENV RUNNER_LOG_DIR=/home/runner/.anamnesis-runner/logs
+ENV RUNNER_TMP_DIR=/home/runner/.anamnesis-runner/tmp
+
+EXPOSE 7900
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:7900/health -O /dev/null || exit 1
+
+CMD ["node", "src/index.js"]

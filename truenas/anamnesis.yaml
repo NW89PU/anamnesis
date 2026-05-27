@@ -38,9 +38,9 @@ services:
     networks:
       - anamnesis
 
-  # MCP server — exposes Anamnesis as MCP tools for Claude Code on Win VM.
-  # Bind to Tailscale IP только (100.100.10.10 = TrueNAS в tailnet).
-  # Никакого публичного интернета — только Claude через Tailscale-туннель.
+  # MCP server — exposes Anamnesis tools to Claude via Streamable HTTP.
+  # Internal-only: runner sibling connects to it через http://mcp:7800.
+  # (External port mapping убран — runner живёт в той же docker-сети.)
   mcp:
     image: ghcr.io/nw89pu/anamnesis-mcp:latest
     restart: unless-stopped
@@ -50,12 +50,36 @@ services:
     environment:
       NODE_ENV: production
       MCP_PORT: "7800"
-      MCP_HOST: "0.0.0.0"   # bind inside container, host port restricted via ports:
+      MCP_HOST: "0.0.0.0"
       ANAMNESIS_URL: http://backend:3010
     env_file:
       - /mnt/ssd/apps/anamnesis/config/anamnesis.env
-    ports:
-      - "100.100.11.11:7800:7800"   # ТОЛЬКО Tailscale IP TrueNAS
+    networks:
+      - anamnesis
+
+  # Claude Runner — spawns claude -p with MCP config per request.
+  # Backend дёргает по http://runner:7900 (internal docker DNS), наружу
+  # не торчит. OAuth credentials (MAX subscription) persistуются в
+  # /mnt/ssd/apps/anamnesis/runner-claude volume.
+  #
+  # First-time setup после первого старта:
+  #   sudo mkdir -p /mnt/ssd/apps/anamnesis/runner-claude
+  #   sudo chown 568:568 /mnt/ssd/apps/anamnesis/runner-claude
+  #   docker exec -it ix-anamnesis-runner-1 claude login
+  #   (открыть URL → авторизовать в браузере → tokens сохранятся в volume)
+  runner:
+    image: ghcr.io/nw89pu/anamnesis-runner:latest
+    restart: unless-stopped
+    user: "568:568"
+    depends_on:
+      mcp:
+        condition: service_started
+    environment:
+      MCP_SERVER_URL: http://mcp:7800/mcp
+    env_file:
+      - /mnt/ssd/apps/anamnesis/config/anamnesis.env   # RUNNER_TOKEN, MCP_TOKEN
+    volumes:
+      - /mnt/ssd/apps/anamnesis/runner-claude:/home/runner/.claude
     networks:
       - anamnesis
 

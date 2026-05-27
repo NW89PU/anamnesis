@@ -1,23 +1,28 @@
-// Anamnesis Claude Runner (Stage C).
+// Anamnesis Claude Runner.
 //
-// HTTP service running on the Win VM. Accepts POST /run from the
-// Anamnesis backend, spawns `claude -p <prompt> --mcp-config ...`,
-// streams stdout back as SSE so the UI can display live progress.
+// HTTP service (Docker sibling of backend on TrueNAS). Accepts POST /run
+// from the backend, spawns `claude -p <prompt> --mcp-config ...`, streams
+// stdout back as SSE so UI can display live progress.
 //
 // Environment:
-//   RUNNER_PORT          порт сервиса (default 7900)
-//   RUNNER_HOST          bind interface (default 0.0.0.0; в проде ставим
-//                        Tailscale IP типа 100.119.16.99)
-//   RUNNER_TOKEN         Bearer token которым backend себя аутентифицирует
-//   MCP_SERVER_URL       URL Anamnesis MCP-сервера (http://100.100.11.11:7800/mcp)
-//   MCP_TOKEN            Bearer token для MCP-сервера
-//   CLAUDE_BIN           путь к claude.cmd (default C:\Users\<user>\AppData\Roaming\npm\claude.cmd)
-//   DEFAULT_TIMEOUT_SEC  hard kill для каждого spawn-а (default 600 = 10 мин)
+//   RUNNER_PORT          port (default 7900)
+//   RUNNER_HOST          bind interface (default 0.0.0.0 inside container)
+//   RUNNER_TOKEN         Bearer token by which backend authenticates itself
+//   MCP_SERVER_URL       Anamnesis MCP server URL (http://mcp:7800/mcp в same network)
+//   MCP_TOKEN            Bearer for MCP server
+//   CLAUDE_BIN           path to claude binary (default `claude` on PATH)
+//   DEFAULT_TIMEOUT_SEC  hard kill per spawn (default 600s)
+//   RUNNER_LOG_DIR       request log dir
+//   RUNNER_TMP_DIR       temp mcp-config files dir
 //
-// Per-request mcp-config: для каждого /run-вызова Runner создаёт временный
-// json-файл с MCP-конфигом, в headers которого зашит user-context. Claude
-// читает этот config и при каждом MCP-tool-вызове передаёт headers серверу,
-// который по ним enforce-ит ownership.
+// Per-request mcp-config: each /run call writes a temp JSON config with
+// user_id/user_role/active_patient_id in HTTP headers. Claude passes them
+// on every MCP tool call → MCP server enforces ownership.
+//
+// First-time setup after container starts:
+//   docker exec -it ix-anamnesis-runner-1 claude login
+//   (opens device-code URL → authorize in browser → tokens persist in
+//   the /home/runner/.claude volume.)
 
 import express from 'express';
 import { spawn } from 'node:child_process';
@@ -30,13 +35,12 @@ const RUNNER_HOST = process.env.RUNNER_HOST || '0.0.0.0';
 const RUNNER_TOKEN = process.env.RUNNER_TOKEN || '';
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://100.100.11.11:7800/mcp';
 const MCP_TOKEN = process.env.MCP_TOKEN || '';
-const CLAUDE_BIN = process.env.CLAUDE_BIN
-  || path.join(process.env.APPDATA || `${os.homedir()}/AppData/Roaming`, 'npm', 'claude.cmd');
+const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const DEFAULT_TIMEOUT_SEC = parseInt(process.env.DEFAULT_TIMEOUT_SEC, 10) || 600;
 const LOG_DIR = process.env.RUNNER_LOG_DIR
-  || path.join(process.env.APPDATA || `${os.homedir()}/AppData/Roaming`, 'anamnesis-runner', 'logs');
+  || path.join(os.homedir(), '.anamnesis-runner', 'logs');
 const TMP_DIR = process.env.RUNNER_TMP_DIR
-  || path.join(process.env.APPDATA || `${os.homedir()}/AppData/Roaming`, 'anamnesis-runner', 'tmp');
+  || path.join(os.homedir(), '.anamnesis-runner', 'tmp');
 
 if (!RUNNER_TOKEN) console.warn('[runner] WARNING: RUNNER_TOKEN not set, all clients pass through (dev mode)');
 if (!MCP_TOKEN) console.warn('[runner] WARNING: MCP_TOKEN not set');
@@ -139,8 +143,7 @@ app.post('/run', (req, res) => {
   res.flushHeaders();
   res.write(`event: start\ndata: ${JSON.stringify({ request_id: requestId })}\n\n`);
 
-  // shell:true для Windows .cmd shim — без него Node 22+ выдаёт EINVAL
-  const proc = spawn(CLAUDE_BIN, args, { env: process.env, windowsHide: true, shell: true });
+  const proc = spawn(CLAUDE_BIN, args, { env: process.env });
 
   const logFile = path.join(LOG_DIR, `${requestId}.log`);
   const logStream = fs.createWriteStream(logFile, { flags: 'a' });
