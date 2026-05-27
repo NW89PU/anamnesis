@@ -8,32 +8,19 @@
  */
 
 export const EP = {
-  // ── Auth ──────────────────────────────────
+  // ── Auth (v4.1 Google-only via CF Access) ─
   authCheck: '/auth/check',
-  authLogin: '/auth/login',                       // PIN-based (legacy + per-device fast-path)
-  authLoginPassword: '/auth/login-password',      // v4.0 email + password
-  authRegister: '/auth/register',                 // v4.0 регистрация (требует CF Access)
-  authCfStatus: '/auth/cf-status',                // v4.0 включён ли CF + детектированный email
-  authMe: '/me',                                  // v4.0 текущий user (id, email, role, ai_enabled)
+  authCfStatus: '/auth/cf-status',
+  authCfBootstrap: '/auth/cf-bootstrap',          // POST — создать session из CF JWT
+  authActivePatient: '/auth/active-patient',      // POST — выбрать активного пациента
+  authMe: '/me',                                  // GET — user + patients + active
   authLogout: '/auth/logout',
   authLogoutAll: '/auth/logout-all',
-  authChangePin: '/auth/change-pin',
-  authVerifyDevice: '/auth/verify-device',
-  authSetSecurityQuestion: '/auth/set-security-question',
-  authSecurityStatus: '/auth/security-status',
-  authRevokeDevice: '/auth/revoke-device',
-
-  // ── WebAuthn (Face ID / Touch ID / Windows Hello) ──
-  webauthnRegisterOptions: '/webauthn/register/options',
-  webauthnRegisterVerify: '/webauthn/register/verify',
-  webauthnLoginOptions: '/webauthn/login/options',
-  webauthnLoginVerify: '/webauthn/login/verify',
-  webauthnCredentials: '/webauthn/credentials',
-  webauthnCredentialItem: (id: number) => `/webauthn/credentials/${id}`,
-  webauthnAvailable: '/webauthn/available',
 
   // ── Patients ──────────────────────────────
+  patient: '/patient',                            // GET/PUT current, POST new
   patientList: '/patient/list',
+  patientItem: (id: number) => `/patient/${id}`,  // DELETE
   patientContext: '/patient-context',
 
   // ── Dashboard ─────────────────────────────

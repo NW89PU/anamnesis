@@ -223,25 +223,14 @@ anamnesis/
 
 ## Модель безопасности
 
-### Аутентификация (v4.0 — multi-user)
+### Аутентификация (v4.1 — Google only через Cloudflare Access)
 
-- **Email + password** (`POST /api/auth/login-password`) — основной вход. Тот же scrypt-хеш, что и для PIN.
-- **Изоляция данных по пациентам**: каждый user строго привязан к одному patient через FK. Бэкенд резолвит `req.patientId` из `users.patient_id`; обычный user не может подменить через заголовок `X-Patient-Id` (молча игнорируется).
-- **Роли**: `role='admin'` сохраняет override через header и доступ к admin-tools API; `role='user'` заперт на собственного пациента.
-- **AI-фичи под флагом**: `users.ai_enabled` контролирует, кто может создавать AI-запросы и пользоваться AI-чатом. Бэк защищает через middleware `requireAiEnabled` на `POST /api/ai-requests`; фронт скрывает соответствующие кнопки.
-- **Регистрация** доступна только за Cloudflare Access — `POST /api/auth/register` принимает запрос, только если CF Access прокинул проверенный email через JWT. Без CF — 403.
-
-### Аутентификация (legacy, остаётся рабочей)
-
-- **6-значный PIN** (scrypt-хеш) как per-device fast-path. Доступен из `/login` по ссылке «Войти по PIN».
-- **WebAuthn-биометрия** (Face ID / Touch ID / Windows Hello) на устройствах, где зарегистрирован passkey.
-- **Device trust**: новое устройство при PIN-входе требует контрольное слово.
-- **Серверный exponential backoff**: 3 ошибки → блок 1 мин → 2 → 4 → ... до 24 ч.
-- **Сессии в SQLite** (14 дней sliding expiry, IP+UA логирование, ревокация, опциональный `user_id` для multi-user-сессий).
-
-### Внешний слой (опционально)
-
-- **Cloudflare Access** — если в `.env` заданы `CF_ACCESS_TEAM_DOMAIN` и `CF_ACCESS_AUD`, бэкенд валидирует `Cf-Access-Jwt-Assertion` через CF JWKS (кеш 1 ч) на каждом запросе. Идеален как внешний whitelist «только друзей» по email; in-app login остаётся внутри.
+- **Единственный способ входа** — Google OAuth через **Cloudflare Access** (whitelist email-ов). Бэкенд проверяет JWT через CF JWKS (cached 1ч), читает trusted email-claim из `req.cfEmail`, при первом визите upsert-ит `users` запись (role/ai_enabled — по правилу: совпадение с `ANAMNESIS_ADMIN_EMAIL` → admin). Сессия создаётся автоматически через `POST /api/auth/cf-bootstrap`.
+- **Никаких паролей** не хранится. Никаких PIN, security questions, WebAuthn passkeys, register-форм, forgot-password flow. Identity полностью делегирована Cloudflare + Google.
+- **Patient ownership (1 user → N patients)**: каждый patient принадлежит одному user через `patient.owner_user_id`. Юзер ведёт записи нескольких пациентов (себя, детей, супруга, родителей). При входе показывается экран «Кто сегодня?» с кружочками — выбираешь и попадаешь в его dashboard.
+- **Per-user isolation**: backend filters `/api/patient/list` по `owner_user_id`. Любой запрос с `X-Patient-Id` для не-своего patient → 403. Admin (по email) видит всех — для управления.
+- **Relationship** (степень родства, free text) — AI-координатор использует для family-history и cohabitation-контекста (генетика для кровных, среда для совместно проживающих).
+- **AI gating**: `users.ai_enabled` контролирует, кто может триггерить AI. Backend защищает через `requireAiEnabled`; frontend скрывает AI-кнопки и AI-чат.
 
 ### Сеть и hardening
 

@@ -1,170 +1,213 @@
 import { createContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import { getSession, setSessionToken, clearSession, type Session } from './session';
+import { getSession, setSessionToken, clearSession, setPatientId, type Session } from './session';
 import { api } from '@/shared/api/client';
 import { EP } from '@/shared/api/endpoints';
+import { ApiError } from '@/shared/api/errors';
 import { useQueryClient } from '@tanstack/react-query';
 
 /**
- * Auth Context — React-обёртка над session store + user identity.
+ * Auth Context (v4.1) — Google-only via Cloudflare Access + N patients per user.
  *
- * Отвечает за:
- * - Проверку валидности session_token на старте приложения
- * - Подтягивание user identity через /api/me после успешного login
- * - Logout (очистка session + перенаправление на /login или /pin)
+ * Стейт-машина:
+ *   loading        — на mount, пока не отвечает /api/me
+ *   no-patients    — авторизован, но пациентов 0 → PatientPicker «Добавь первого»
+ *   needs-patient  — авторизован, есть пациенты, но активный не выбран → PatientPicker
+ *   authenticated  — есть активный пациент → AppShell
+ *   unauthenticated — нет валидной session + CF JWT не передан/невалиден
  *
- * Используется в RequireAuth, Header (имя/email), LoginScreen, PinScreen,
- * RegisterScreen, и любых компонентах которым надо знать role / ai_enabled.
+ * Bootstrap flow:
+ *   1. Mount: GET /api/me
+ *   2. 200 → setUser, setPatients, активный из session.active_patient_id
+ *   3. 401 + needs_bootstrap=true → POST /api/auth/cf-bootstrap → 201 token+user+patients
+ *      → save token, повторно GET /api/me
+ *   4. 401 без needs_bootstrap → status='unauthenticated' (показываем экран refresh)
  *
- * v4.0: добавлено `user` (id, email, role, ai_enabled, patient_id). Для
- * legacy PIN-сессий без user_id (до миграции) /api/me вернёт fallback
- * с role='admin' — UI работает прозрачно.
+ * При status='authenticated', активный пациент хранится в session.active_patient_id
+ * на бэке + в session.patientId в localStorage (для X-Patient-Id header). При
+ * setActivePatient оба обновляются + invalidate React Query.
  */
 
-type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
+type AuthStatus = 'loading' | 'no-patients' | 'needs-patient' | 'authenticated' | 'unauthenticated';
 
 export interface AuthUser {
-  id: number | null;          // null для legacy PIN-сессий без user_id
-  email: string | null;
+  id: number;
+  email: string;
   role: 'admin' | 'user';
   ai_enabled: boolean;
-  patient_id: number;
-  auth_method: 'pin' | 'password';
   last_login_at?: string | null;
+}
+
+export interface AuthPatient {
+  id: number;
+  full_name: string;
+  date_of_birth: string | null;
+  gender: string | null;
+  relationship: string | null;
 }
 
 export interface AuthContextValue {
   status: AuthStatus;
   session: Session;
   user: AuthUser | null;
-  login: (token: string, userFromResponse?: AuthUser) => Promise<void>;
+  patients: AuthPatient[];
+  activePatientId: number | null;
+  activePatient: AuthPatient | null;
+  setActivePatient: (id: number | null) => Promise<void>;
+  reloadPatients: () => Promise<void>;
   logout: () => Promise<void>;
   recheck: () => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
 
+interface MeResponse {
+  user: AuthUser;
+  patients: AuthPatient[];
+  active_patient_id: number | null;
+}
+
+interface BootstrapResponse {
+  token: string;
+  expires_days: number;
+  user: AuthUser;
+  patients: AuthPatient[];
+  active_patient_id: number | null;
+}
+
+function deriveStatus(user: AuthUser | null, patients: AuthPatient[], activeId: number | null): AuthStatus {
+  if (!user) return 'unauthenticated';
+  if (patients.length === 0) return 'no-patients';
+  if (!activeId) return 'needs-patient';
+  return 'authenticated';
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [session, setSession] = useState<Session>(getSession);
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [patients, setPatients] = useState<AuthPatient[]>([]);
+  const [activePatientId, setActivePatientId] = useState<number | null>(null);
   const queryClient = useQueryClient();
 
-  /**
-   * Подтягиваем /api/me. Делаем отдельно от authCheck чтобы:
-   *  - authCheck проверяет валидность token (бэк отвечает 401 если нет)
-   *  - /me возвращает identity + role + ai_enabled (нужно для UI)
-   * Если /me падает (например бэк старой версии) — оставляем user=null,
-   * UI работает как раньше для admin.
-   */
-  const fetchMe = useCallback(async () => {
-    try {
-      const me = await api.get<AuthUser>(EP.authMe);
-      setUser(me);
-    } catch {
-      // 401 уже обработан glob handler; для прочих ошибок — просто оставим null,
-      // UI fallback на legacy admin поведение
-      setUser(null);
-    }
+  const applyMe = useCallback((me: MeResponse) => {
+    setUser(me.user);
+    setPatients(me.patients);
+    setActivePatientId(me.active_patient_id);
+    // sync local patientId for header — null если active не выбран
+    setPatientId(me.active_patient_id);
+    setSession(getSession());
+    setStatus(deriveStatus(me.user, me.patients, me.active_patient_id));
   }, []);
 
-  const recheck = useCallback(async () => {
-    const current = getSession();
-    if (!current.sessionToken) {
-      setStatus('unauthenticated');
-      setSession(current);
-      setUser(null);
-      return;
-    }
+  const tryBootstrap = useCallback(async (): Promise<boolean> => {
     try {
-      await api.get(EP.authCheck);
-      setStatus('authenticated');
-      setSession(current);
-      await fetchMe();
+      const data = await api.post<BootstrapResponse>(EP.authCfBootstrap);
+      setSessionToken(data.token);
+      applyMe({
+        user: data.user,
+        patients: data.patients,
+        active_patient_id: data.active_patient_id,
+      });
+      return true;
     } catch {
+      return false;
+    }
+  }, [applyMe]);
+
+  const recheck = useCallback(async () => {
+    try {
+      const me = await api.get<MeResponse>(EP.authMe);
+      applyMe(me);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        const needsBootstrap = (err.data as { needs_bootstrap?: boolean } | null)?.needs_bootstrap;
+        if (needsBootstrap) {
+          const ok = await tryBootstrap();
+          if (ok) return;
+        }
+      }
+      // unauthenticated — нет валидной session и CF JWT не помог
       clearSession();
-      setSession(getSession());
       setUser(null);
+      setPatients([]);
+      setActivePatientId(null);
+      setSession(getSession());
       setStatus('unauthenticated');
     }
-  }, [fetchMe]);
+  }, [applyMe, tryBootstrap]);
 
-  // Проверка сессии при монтировании
+  // Initial bootstrap on mount
   useEffect(() => {
     void recheck();
   }, [recheck]);
 
-  // Глобальный слушатель 401/403 от api/client.ts.
-  // Срабатывает когда любой запрос упал с "Требуется авторизация" или
-  // "Устройство отозвано владельцем". В этом случае немедленно чистим
-  // локальную сессию и переводим в unauthenticated → RequireAuth
-  // редиректит на /login.
+  // Глобальный 401-обработчик — если session протухла во время работы
   useEffect(() => {
     const onUnauthorized = () => {
       clearSession();
-      setSession(getSession());
       setUser(null);
+      setPatients([]);
+      setActivePatientId(null);
+      setSession(getSession());
       setStatus('unauthenticated');
       queryClient.clear();
-      try {
-        localStorage.removeItem('anamnesis-query-cache-v1');
-      } catch {
-        // ignore
-      }
+      try { localStorage.removeItem('anamnesis-query-cache-v1'); } catch { /* */ }
+      // CF Access cookie скорее всего ещё валиден → попробуем bootstrap
+      // через короткий тайм-аут чтобы UI успел показать состояние смены.
+      setTimeout(() => { void recheck(); }, 100);
     };
     window.addEventListener('auth:unauthorized', onUnauthorized);
     return () => window.removeEventListener('auth:unauthorized', onUnauthorized);
-  }, [queryClient]);
+  }, [queryClient, recheck]);
 
-  const login = useCallback(
-    async (token: string, userFromResponse?: AuthUser) => {
-      setSessionToken(token);
-      setSession(getSession());
-      setStatus('authenticated');
-      // Если login response уже принёс user (login-password/register) — берём
-      // его сразу, иначе подтягиваем через /me (PIN/WebAuthn пути).
-      if (userFromResponse) {
-        setUser(userFromResponse);
-      } else {
-        await fetchMe();
-      }
-      // После успешного логина инвалидируем все queries которые могли
-      // упасть с 401 пока пользователь был на экране login. React Query не
-      // ретраит 401 ошибки автоматически, поэтому без invalidate они
-      // останутся в error state и dashboard/timeline/... будут пустыми.
-      await queryClient.invalidateQueries();
-    },
-    [queryClient, fetchMe]
-  );
+  const setActivePatient = useCallback(async (id: number | null) => {
+    try {
+      await api.post(EP.authActivePatient, { patient_id: id });
+    } catch (err) {
+      console.error('Failed to set active patient on server:', err);
+      // продолжаем локально, на бэке patientId-middleware всё равно fallback-нёт
+    }
+    setActivePatientId(id);
+    setPatientId(id);
+    setSession(getSession());
+    setStatus(deriveStatus(user, patients, id));
+    await queryClient.invalidateQueries();
+    try { localStorage.removeItem('anamnesis-query-cache-v1'); } catch { /* */ }
+  }, [user, patients, queryClient]);
+
+  const reloadPatients = useCallback(async () => {
+    try {
+      const me = await api.get<MeResponse>(EP.authMe);
+      applyMe(me);
+    } catch {
+      // ignore
+    }
+  }, [applyMe]);
 
   const logout = useCallback(async () => {
-    // Попытаемся уведомить сервер чтобы он ревокировал token, но не
-    // блокируем UI если сеть упала — локальная очистка важнее.
-    try {
-      await api.post(EP.authLogout);
-    } catch {
-      // ignore
-    }
+    try { await api.post(EP.authLogout); } catch { /* */ }
     clearSession();
-    setSession(getSession());
     setUser(null);
+    setPatients([]);
+    setActivePatientId(null);
+    setSession(getSession());
     setStatus('unauthenticated');
-    // Очищаем весь кэш React Query — не хотим чтобы следующий пользователь
-    // увидел данные предыдущего из persist cache
     queryClient.clear();
-    try {
-      localStorage.removeItem('anamnesis-query-cache-v1');
-    } catch {
-      // ignore
-    }
+    try { localStorage.removeItem('anamnesis-query-cache-v1'); } catch { /* */ }
   }, [queryClient]);
 
+  const activePatient = patients.find((p) => p.id === activePatientId) ?? null;
+
   return (
-    <AuthContext.Provider value={{ status, session, user, login, logout, recheck }}>
+    <AuthContext.Provider
+      value={{
+        status, session, user, patients, activePatientId, activePatient,
+        setActivePatient, reloadPatients, logout, recheck,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
 }
 
-// useAuth и useMe живут в './useAuth' — импортируй оттуда напрямую.
-// Раньше они были здесь, но React Fast Refresh ломается когда файл
-// экспортирует и компонент, и не-компонент.
+// useAuth и useMe импортируй из './useAuth' (Fast Refresh требование).

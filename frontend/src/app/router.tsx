@@ -1,9 +1,7 @@
 import { createBrowserRouter, Navigate } from 'react-router';
 import { AppShell } from '@/shared/layout/AppShell';
 import { RequireAuth } from '@/shared/auth/RequireAuth';
-import { PinScreen } from '@/shared/auth/PinScreen';
-import { LoginScreen } from '@/shared/auth/LoginScreen';
-import { RegisterScreen } from '@/shared/auth/RegisterScreen';
+import { PatientPickerScreen } from '@/shared/auth/PatientPickerScreen';
 
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { PlanPage } from '@/features/plan/PlanPage';
@@ -29,22 +27,24 @@ import RemindersModal from '@/features/more/modals/RemindersModal';
 import SearchModal from '@/features/more/modals/SearchModal';
 import AiChatSheet from '@/features/more/modals/AiChatSheet';
 import HistoryModal from '@/features/more/modals/HistoryModal';
-import SecurityModal from '@/features/more/modals/SecurityModal';
 import { HealthGraphPage } from '@/features/health-graph/HealthGraphPage';
 
 const basename = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
 
 /**
- * Все роуты приложения.
+ * Все роуты приложения (v4.1).
  *
- * Модалки = child-роуты. Страницы рендерят `<Outlet />` где должны появляться
- * модалки. F5 сохраняет модалку. Back-кнопка закрывает модалку.
+ * Auth: CF Access перед всем, /api/auth/cf-bootstrap создаёт session
+ * автоматически. RequireAuth детектит статус и рендерит PatientPicker
+ * если нет активного пациента.
+ *
+ * /picker остаётся как явный роут — пользователь может вернуться сюда
+ * чтобы сменить пациента или добавить нового (через PatientSwitcher это
+ * dropdown, но есть и direct URL).
  */
 export const router = createBrowserRouter(
   [
-    { path: '/login', Component: LoginScreen },
-    { path: '/register', Component: RegisterScreen },
-    { path: '/pin', Component: PinScreen },
+    { path: '/picker', Component: PatientPickerScreen },
     {
       path: '/',
       element: (
@@ -101,7 +101,6 @@ export const router = createBrowserRouter(
             { path: 'search', Component: SearchModal },
             { path: 'ai-chat', Component: AiChatSheet },
             { path: 'history', Component: HistoryModal },
-            { path: 'security', Component: SecurityModal },
           ],
         },
 

@@ -17,7 +17,6 @@ import {
   IconTopologyStar3,
   IconHistory,
   IconFileExport,
-  IconShieldLock,
   IconLogout,
   type Icon,
 } from '@tabler/icons-react';
@@ -76,7 +75,6 @@ const TOOLS_GROUP: NavItemDef[] = [
   { to: '/more/search', label: 'Поиск', icon: IconSearch },
   { to: '/graph', label: 'Карта здоровья', icon: IconTopologyStar3, prefix: true },
   { to: '/more/history', label: 'История изменений', icon: IconHistory },
-  { to: '/more/security', label: 'Безопасность', icon: IconShieldLock },
   { to: '/more/export', label: 'Экспорт PDF', icon: IconFileExport, action: 'export-pdf' },
 ];
 

@@ -148,45 +148,8 @@ CREATE TABLE reminders (
 );
 `);
 
-// ═══════════════════════════════════════════════════════════════════
-// DEMO SEED — sample data to help new users understand the UI.
-//
-// When you connect your AI coordinator, ask it to wipe this demo
-// patient and create your own. See README → "Replace the demo
-// patient with your own" and AI_COORDINATOR_GUIDE.md → "First-Run
-// Setup".
-//
-// Every section below has ONE example row so all UI screens render
-// populated state on a fresh install.
-// ═══════════════════════════════════════════════════════════════════
-
-db.exec(`
-INSERT INTO patient (full_name, date_of_birth, gender, birth_weight_g, birth_height_cm, apgar, birth_notes, current_height_cm, current_weight_kg, city, allergies, notes) VALUES
-('Иванов Иван Иванович', '2020-01-15', 'М', 3400, 52, '8/9', 'Роды в срок, без осложнений.', 110, 20.0, 'Демо-город',
- 'Нет известных аллергий',
- 'Демонстрационный пациент. Замените этот профиль на свой через AI-координатора (см. README).');
-
-INSERT INTO diagnoses (icd_code, name, status, diagnosed_date, source, notes) VALUES
-('J06.9', 'ОРВИ (пример)', 'closed', '2024-11-10', 'Демо-данные', 'Пример закрытого диагноза. После подключения AI-координатора замените своими.');
-
-INSERT INTO medications (name, dosage, frequency, start_date, end_date, prescribed_by, status, notes) VALUES
-('Парацетамол (пример)', '250 мг', 'при температуре > 38', '2024-11-10', '2024-11-13', 'Демо-педиатр', 'completed', 'Демонстрационный препарат.');
-
-INSERT INTO specialists (full_name, specialization, clinic, phone, status, notes) VALUES
-('Петров Пётр Петрович', 'Педиатр', 'Демо-клиника', NULL, 'active', 'Демонстрационный специалист. Замените своими.');
-
-INSERT INTO plan (title, description, detail, priority, status, sort_order) VALUES
-('Повторный осмотр через год',
- 'Плановый профилактический осмотр у педиатра.',
- 'Демонстрационный пункт плана. После подключения AI-координатора этот список будет вести AI на основе реальных документов.',
- 'medium', 'pending', 1);
-
-INSERT INTO timeline (event_date, title, description, category, severity, badge_text, badge_color, specialist_name, specialist_type) VALUES
-('2024-11-10', 'Профилактический осмотр (пример)', 'Демонстрационный визит. Ребёнок здоров, рекомендован повторный осмотр через год.', 'visit', 'info', 'Осмотр', 'blue', 'Петров П.П.', 'Педиатр');
-
-INSERT INTO reminders (title, message, remind_at, status) VALUES
-('Плановый осмотр', 'Демонстрационное напоминание. Замените своими после подключения AI.', '2026-11-10 09:00:00', 'pending');
-`);
+// v4.1: демо-сиды отключены. Юзер сам добавит первого пациента после
+// Google login → AddPatientModal. До этого все таблицы пустые.
 
 // Note: vaccinations, growth_log, lab_results tables are created at first
 // server start via migrations in src/db.js, not here. To populate them

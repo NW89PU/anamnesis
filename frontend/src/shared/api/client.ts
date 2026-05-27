@@ -92,11 +92,11 @@ async function request<T>(
     // событие которое AuthContext подхватит и сделает auto-logout.
     // Это срабатывает на ЛЮБОЙ endpoint кроме самих auth-эндпоинтов.
     if (
-      (response.status === 401 || (response.status === 403 && (data as { device_revoked?: boolean })?.device_revoked)) &&
-      !path.startsWith('/auth/login') &&
-      !path.startsWith('/auth/verify-device') &&
+      response.status === 401 &&
+      !(data as { needs_bootstrap?: boolean } | null)?.needs_bootstrap &&
+      !path.startsWith('/auth/cf-bootstrap') &&
       !path.startsWith('/auth/check') &&
-      !path.startsWith('/webauthn/login/')
+      path !== '/me'
     ) {
       try {
         window.dispatchEvent(new CustomEvent('auth:unauthorized', {

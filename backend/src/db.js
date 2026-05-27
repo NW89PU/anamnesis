@@ -879,20 +879,23 @@ try {
 // Backfill admin-юзера происходит в отдельной миграции при старте
 // сервиса (см. services/auth-session.js или init-users.js), не здесь —
 // здесь только схема.
+// v4.1: users.patient_id и password_hash — legacy колонки (1:1 модель
+// v4.0 заменена на 1:N через patient.owner_user_id). NOT NULL остаются
+// только потому что SQLite drop column болезненный. Записывается мусор
+// (0 для patient_id, '' для password_hash). FK на patient убран — на
+// fresh DB не применится; на старых DB остаётся, но мы туда не пишем.
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    patient_id INTEGER NOT NULL,
+    password_hash TEXT NOT NULL DEFAULT '',
+    patient_id INTEGER NOT NULL DEFAULT 0,
     role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin','user')),
     ai_enabled INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_login_at TEXT,
-    FOREIGN KEY (patient_id) REFERENCES patient(id) ON DELETE CASCADE
+    last_login_at TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-  CREATE INDEX IF NOT EXISTS idx_users_patient ON users(patient_id);
 `);
 
 // sessions.user_id — связь session → user. Nullable для legacy PIN-сессий.
@@ -905,6 +908,18 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)');
 // событий (login_fail когда юзера ещё не нашли).
 try { db.exec('ALTER TABLE auth_log ADD COLUMN user_id INTEGER'); } catch(e) {}
 db.exec('CREATE INDEX IF NOT EXISTS idx_auth_log_user ON auth_log(user_id)');
+
+// ── v4.1 patient ownership — 1 user → N patients ────────────
+// Модель меняется с 1:1 (users.patient_id) на 1:N. Один user
+// может вести записи нескольких пациентов: себя, детей, супруга,
+// родителей. patient.owner_user_id указывает кому принадлежит запись.
+// relationship — свободный текст ("сын", "жена", "мать") — используется
+// AI-координатором для family-history и cohabitation контекста.
+// users.patient_id остаётся в схеме (SQLite drop column болезненный)
+// но код больше его не читает/пишет.
+try { db.exec('ALTER TABLE patient ADD COLUMN owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE'); } catch(e) {}
+try { db.exec('ALTER TABLE patient ADD COLUMN relationship TEXT'); } catch(e) {}
+db.exec('CREATE INDEX IF NOT EXISTS idx_patient_owner ON patient(owner_user_id)');
 
 // ── PostgreSQL compatibility wrapper ────────────────────────
 

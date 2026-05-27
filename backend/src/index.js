@@ -35,7 +35,6 @@ const prescriptionsRoutes = require('./routes/prescriptions');
 const visitDiagnosesRoutes = require('./routes/visit-diagnoses');
 const patientContextRoutes = require('./routes/patient-context');
 const adminToolsRoutes = require('./routes/admin-tools');
-const webauthnRoutes = require('./routes/webauthn');
 const historyRoutes = require('./routes/history');
 
 const app = express();
@@ -79,12 +78,10 @@ const sqlLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/login-password', authLimiter);
-app.use('/api/auth/register', authLimiter);
-app.use('/api/auth/verify-device', authLimiter);
-app.use('/api/auth/change-pin', authLimiter);
-app.use('/api/webauthn/login/verify', authLimiter);
+// v4.1: единственный точка входа auth — /auth/cf-bootstrap (CF JWT).
+// PIN/password/webauthn endpoint-ы удалены. Лимит сохраняем чтобы спам
+// bootstrap-ом не клал JWKS lookup.
+app.use('/api/auth/cf-bootstrap', authLimiter);
 app.use('/api/admin/tools/sql', sqlLimiter);
 app.use('/api/', apiLimiter);
 
@@ -111,7 +108,13 @@ app.get('/api/health', (_req, res) => {
   }
 });
 
-// ── PIN-based session auth (v3: БД + sliding + revocation + audit) ──
+// ── v4.1 auth: Google via Cloudflare Access ──
+//
+// Единственная точка входа — POST /api/auth/cf-bootstrap. CF Access
+// JWT валидирован в cfAccessMiddleware (выше) → req.cfEmail доступен.
+// Backend upsert-ит users-запись по email и создаёт session token.
+// Никаких паролей, PIN, security questions, WebAuthn — всё это
+// удалено в этой ревизии.
 
 function clientIp(req) {
   return (req.headers['x-forwarded-for']?.split(',')[0].trim()) || req.socket?.remoteAddress || null;
@@ -120,326 +123,89 @@ function userAgent(req) {
   return req.headers['user-agent']?.slice(0, 300) || null;
 }
 
-// POST /api/auth/login — двухфазный login:
-//   1. Верифицируем PIN
-//   2. Если security question настроен И device_id незнаком → возвращаем
-//      {requires_answer: true, question: "..."} вместо токена
-//   3. Клиент показывает форму, отправляет ответ в /api/auth/verify-device
-//   4. Там уже создаётся session token и device регистрируется
-app.post('/api/auth/login', (req, res) => {
-  const { pin } = req.body || {};
+// POST /api/auth/cf-bootstrap — создать session из CF Access JWT.
+// Это единственная точка входа в систему. CF Access уже валидировал
+// JWT в cfAccessMiddleware, в req.cfEmail лежит trusted email юзера.
+// Backend upsert-ит users-запись и создаёт session token.
+app.post('/api/auth/cf-bootstrap', (req, res) => {
+  if (!req.cfEmail) {
+    return res.status(403).json({
+      error: 'Cloudflare Access не предоставил email. ' +
+             'Проверьте что Google identity provider настроен и app domain корректный.',
+    });
+  }
   const ip = clientIp(req);
   const ua = userAgent(req);
-  const deviceId = req.headers['x-device-id'] || req.body?.device_id || null;
-  const patientId = parseInt(req.headers['x-patient-id'] || '1', 10);
-
+  const deviceId = req.headers['x-device-id'] || null;
   try {
-    // Exponential backoff check ДО проверки PIN
-    const lockout = authSession.checkLockout(ip, deviceId);
-    if (lockout.locked) {
-      authSession.logAuthEvent('login_locked_out', ip, ua, {
-        patient_id: patientId, device_id: deviceId, remaining_ms: lockout.remainingMs,
-      });
-      return res.status(429).json({
-        error: 'Слишком много попыток. Попробуйте позже.',
-        locked_until: new Date(Date.now() + lockout.remainingMs).toISOString(),
-        remaining_sec: Math.ceil(lockout.remainingMs / 1000),
-        attempts: lockout.attempts,
-      });
-    }
-
-    // No PIN configured — auto-login (dev mode)
-    if (!config.APP_PIN && !authSession.getStoredPinHash(patientId)) {
-      const token = authSession.createSession(patientId, ip, ua, deviceId);
-      if (deviceId) authSession.registerDevice(deviceId, patientId, null, ip, ua);
-      authSession.resetAuthFailures(ip, deviceId);
-      authSession.logAuthEvent('login_success', ip, ua, { reason: 'no_pin_configured', patient_id: patientId });
-      return res.json({ token, expires_days: authSession.SESSION_MAX_AGE_DAYS });
-    }
-
-    const stored = authSession.getStoredPinHash(patientId);
-    if (!stored) {
-      authSession.logAuthEvent('login_fail', ip, ua, { reason: 'no_hash_stored', patient_id: patientId });
-      return res.status(500).json({ error: 'PIN не настроен' });
-    }
-
-    if (!authSession.verifyPin(pin, stored)) {
-      const newLockout = authSession.recordAuthFailure(ip, deviceId, patientId);
-      authSession.logAuthEvent('login_fail', ip, ua, {
-        reason: 'wrong_pin', patient_id: patientId, device_id: deviceId, attempts: newLockout.attempts,
-      });
-      return res.status(401).json({
-        error: 'Неверный PIN-код',
-        attempts: newLockout.attempts,
-        next_lockout_sec: newLockout.locked ? Math.ceil(newLockout.remainingMs / 1000) : 0,
-      });
-    }
-
-    // PIN верный. Проверяем device trust.
-    const hasQuestion = authSession.hasSecurityQuestion(patientId);
-    const deviceKnown = deviceId ? authSession.isKnownDevice(deviceId, patientId) : false;
-
-    if (hasQuestion && !deviceKnown) {
-      // Security question настроен и устройство неизвестное → challenge
-      const q = authSession.getSecurityQuestion(patientId);
-      authSession.logAuthEvent('login_challenge', ip, ua, { patient_id: patientId, device_id: deviceId });
-
-      // Выдаём временный "pending_challenge_token" который действует 5 минут
-      // и только для endpoint verify-device. Без него challenge нельзя верифицировать.
-      const challengeToken = require('crypto').randomBytes(32).toString('hex');
-      rawDb.prepare(
-        "INSERT INTO app_settings (key, value) VALUES (?, ?)"
-      ).run(
-        `pending_challenge_${challengeToken}`,
-        JSON.stringify({ patient_id: patientId, device_id: deviceId, expires: Date.now() + 5 * 60 * 1000, ip })
-      );
-
-      return res.json({
-        requires_answer: true,
-        question: q.question,
-        challenge_token: challengeToken,
-      });
-    }
-
-    // Либо security question не настроен, либо device знакомый → выдаём session
-    // ВАЖНО: registerDevice может бросить 403 если устройство было отозвано
-    // владельцем. В этом случае PIN верный, но вход запрещён.
-    try {
-      if (deviceId) {
-        authSession.registerDevice(deviceId, patientId, null, ip, ua);
-      }
-    } catch (regErr) {
-      if (regErr.status === 403) {
-        authSession.logAuthEvent('login_blocked_revoked', ip, ua, { patient_id: patientId, device_id: deviceId });
-        return res.status(403).json({
-          error: 'Это устройство было отозвано владельцем. Обратитесь к нему для восстановления доступа.',
-          device_revoked: true,
-        });
-      }
-      throw regErr;
-    }
-    const token = authSession.createSession(patientId, ip, ua, deviceId);
-    authSession.resetAuthFailures(ip, deviceId);
-    authSession.logAuthEvent('login_success', ip, ua, { patient_id: patientId, device_known: deviceKnown });
-    res.json({
+    const user = authSession.findOrCreateUserFromCfEmail(req.cfEmail, config);
+    // patientId=null в session означает «активный пациент не выбран».
+    // Frontend покажет PatientPickerScreen и через POST /api/auth/active-patient
+    // обновит session перед началом работы.
+    const token = authSession.createSession(null, ip, ua, deviceId, user.id);
+    authSession.logAuthEvent('cf_bootstrap', ip, ua, { user_id: user.id, email: user.email });
+    const patients = rawDb.prepare(
+      'SELECT id, full_name, date_of_birth, gender, relationship FROM patient ' +
+      'WHERE owner_user_id = ? ORDER BY id'
+    ).all(user.id);
+    res.status(201).json({
       token,
       expires_days: authSession.SESSION_MAX_AGE_DAYS,
-      device_trusted: deviceKnown || !hasQuestion,
-      needs_security_setup: !hasQuestion,
+      user: {
+        id: user.id, email: user.email, role: user.role,
+        ai_enabled: !!user.ai_enabled, last_login_at: user.last_login_at,
+      },
+      patients,
+      active_patient_id: null,
     });
   } catch (err) {
-    console.error('[auth] login error:', err);
-    authSession.logAuthEvent('login_error', ip, ua, { error: err.message });
+    console.error('[auth] cf-bootstrap error:', err);
     res.status(500).json({ error: 'Ошибка авторизации' });
   }
 });
 
-// POST /api/auth/verify-device — ответ на секретный вопрос для нового device
-// Принимает {challenge_token, answer, device_label?}
-// Проверяет challenge не истёк, PIN уже был принят, ответ правильный.
-// При успехе: регистрирует device_id как trusted, создаёт session token.
-app.post('/api/auth/verify-device', (req, res) => {
-  const { challenge_token, answer, device_label } = req.body || {};
-  const ip = clientIp(req);
-  const ua = userAgent(req);
-
-  if (!challenge_token || !answer) {
-    return res.status(400).json({ error: 'challenge_token и answer обязательны' });
-  }
-
-  try {
-    const row = rawDb.prepare(
-      "SELECT value FROM app_settings WHERE key = ?"
-    ).get(`pending_challenge_${challenge_token}`);
-
-    if (!row) {
-      authSession.logAuthEvent('verify_device_fail', ip, ua, { reason: 'no_challenge' });
-      return res.status(401).json({ error: 'Challenge не найден или истёк' });
-    }
-
-    const challenge = JSON.parse(row.value);
-    if (challenge.expires < Date.now()) {
-      rawDb.prepare("DELETE FROM app_settings WHERE key = ?").run(`pending_challenge_${challenge_token}`);
-      authSession.logAuthEvent('verify_device_fail', ip, ua, { reason: 'expired' });
-      return res.status(401).json({ error: 'Challenge истёк, повторите вход' });
-    }
-
-    const { patient_id, device_id } = challenge;
-
-    // Backoff check — тот же механизм что и для PIN
-    const lockout = authSession.checkLockout(ip, device_id);
-    if (lockout.locked) {
-      authSession.logAuthEvent('verify_device_locked', ip, ua, {
-        patient_id, device_id, remaining_ms: lockout.remainingMs,
-      });
-      return res.status(429).json({
-        error: 'Слишком много попыток. Попробуйте позже.',
-        locked_until: new Date(Date.now() + lockout.remainingMs).toISOString(),
-        remaining_sec: Math.ceil(lockout.remainingMs / 1000),
-        attempts: lockout.attempts,
-      });
-    }
-
-    if (!authSession.verifySecurityAnswer(patient_id, answer)) {
-      const newLockout = authSession.recordAuthFailure(ip, device_id, patient_id);
-      authSession.logAuthEvent('verify_device_fail', ip, ua, {
-        patient_id, device_id, reason: 'wrong_answer', attempts: newLockout.attempts,
-      });
-      return res.status(401).json({
-        error: 'Неверный ответ',
-        attempts: newLockout.attempts,
-        next_lockout_sec: newLockout.locked ? Math.ceil(newLockout.remainingMs / 1000) : 0,
-      });
-    }
-
-    // Успех (правильный ответ) — удаляем challenge.
-    // НО: если устройство ранее было отозвано — registerDevice бросит 403,
-    // и мы НЕ выдаём сессию. Это основа фикса security bug: отозванные
-    // устройства не могут вернуться даже если знают контрольное слово.
-    rawDb.prepare("DELETE FROM app_settings WHERE key = ?").run(`pending_challenge_${challenge_token}`);
-
-    // Проверяем было ли устройство уже зарегистрировано раньше (для NEW DEVICE нотификации)
-    const wasKnownBefore = rawDb.prepare(
-      'SELECT id, revoked FROM known_devices WHERE device_id = ? AND patient_id = ?'
-    ).get(device_id, patient_id);
-
-    try {
-      authSession.registerDevice(device_id, patient_id, device_label || null, ip, ua);
-    } catch (regErr) {
-      if (regErr.status === 403) {
-        authSession.logAuthEvent('verify_device_blocked_revoked', ip, ua, { patient_id, device_id });
-        return res.status(403).json({
-          error: 'Это устройство было отозвано владельцем. Обратитесь к нему для восстановления доступа.',
-          device_revoked: true,
-        });
-      }
-      throw regErr;
-    }
-    authSession.resetAuthFailures(ip, device_id);
-    const token = authSession.createSession(patient_id, ip, ua, device_id);
-    authSession.logAuthEvent('verify_device_success', ip, ua, { patient_id, device_id });
-
-    // 🔔 Telegram уведомление только если устройство РЕАЛЬНО новое
-    // (первая регистрация, не перелогин с того же device_id)
-    if (!wasKnownBefore) {
-      const patient = rawDb.prepare('SELECT full_name FROM patient WHERE id = ?').get(patient_id);
-      const patientName = patient?.full_name || `patient ${patient_id}`;
-      const now = new Date().toLocaleString('ru-RU', {
-        timeZone: 'Asia/Yekaterinburg',
-        dateStyle: 'short',
-        timeStyle: 'medium',
-      });
-      const uaShort = (ua || 'unknown').slice(0, 200);
-      const label = device_label?.trim() || '(без названия)';
-      // HTML escape basic
-      const esc = (s) => String(s || '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-
-      const message =
-        `<b>[NEW DEVICE]</b>\n\n` +
-        `Устройство получило доступ впервые.\n\n` +
-        `• Пациент: <b>${esc(patientName)}</b>\n` +
-        `• Название: <b>${esc(label)}</b>\n` +
-        `• IP: <code>${esc(ip || 'unknown')}</code>\n` +
-        `• User Agent: <code>${esc(uaShort)}</code>\n` +
-        `• Время: ${esc(now)}\n` +
-        `• Device ID: <code>${esc(device_id.slice(0, 13))}…</code>\n\n` +
-        `Если это <b>не ты</b> — немедленно:\n` +
-        `• Смени PIN через Ещё → Безопасность\n` +
-        `• Удали устройство из списка доверенных`;
-
-      telegram.sendMessage(message).catch(e =>
-        console.error('[auth] new device telegram notify failed:', e.message)
-      );
-    }
-
-    res.json({
-      token,
-      expires_days: authSession.SESSION_MAX_AGE_DAYS,
-      device_trusted: true,
-    });
-  } catch (err) {
-    console.error('[auth] verify-device error:', err);
-    res.status(500).json({ error: 'Ошибка верификации устройства' });
-  }
-});
-
-// POST /api/auth/set-security-question — настройка секретного вопроса
-// Требует активной сессии (т.е. юзер уже залогинен). После установки
-// текущее устройство автоматически регистрируется как trusted.
-app.post('/api/auth/set-security-question', (req, res) => {
+// POST /api/auth/active-patient — обновить активного пациента в session.
+// Body: { patient_id: number | null }. Проверяет ownership (admin может всех).
+app.post('/api/auth/active-patient', (req, res) => {
   const token = req.headers['x-session-token'];
   const sess = authSession.getSession(token);
-  if (!sess) return res.status(401).json({ error: 'Требуется авторизация' });
+  if (!sess || !sess.user_id) return res.status(401).json({ error: 'Требуется авторизация' });
 
-  const { question, answer, device_label } = req.body || {};
-  const ip = clientIp(req);
-  const ua = userAgent(req);
-  const deviceId = req.headers['x-device-id'];
-
-  try {
-    authSession.setSecurityQuestion(sess.patient_id, question, answer);
-    // Регистрируем текущее устройство (чтобы юзер не выкинулся сам)
-    if (deviceId) {
-      authSession.registerDevice(deviceId, sess.patient_id, device_label || 'Это устройство', ip, ua);
-    }
-    authSession.logAuthEvent('security_question_set', ip, ua, { patient_id: sess.patient_id });
-
-    // Уведомление что security setup выполнен
-    const message =
-      `<b>[SECURITY SETUP]</b>\n\n` +
-      `Контрольное слово настроено. С этого момента новые устройства будут требовать его при входе.\n\n` +
-      `• IP: <code>${(ip || 'unknown').replace(/[&<>]/g, '')}</code>\n` +
-      `• Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Yekaterinburg' })}`;
-    telegram.sendMessage(message).catch(() => {});
-
-    res.json({ ok: true, current_device_registered: !!deviceId });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+  const { patient_id } = req.body || {};
+  const pid = patient_id == null ? null : parseInt(patient_id, 10);
+  if (patient_id != null && (!Number.isInteger(pid) || pid <= 0)) {
+    return res.status(400).json({ error: 'patient_id должен быть положительным числом или null' });
   }
+
+  const user = authSession.getUserById(sess.user_id);
+  if (pid != null && user.role !== 'admin') {
+    const owned = rawDb.prepare(
+      'SELECT id FROM patient WHERE id = ? AND owner_user_id = ?'
+    ).get(pid, user.id);
+    if (!owned) return res.status(403).json({ error: 'Нет доступа к этому пациенту' });
+  }
+
+  // 0 = sentinel «не выбран» (sessions.patient_id NOT NULL)
+  rawDb.prepare('UPDATE sessions SET patient_id = ? WHERE token = ?').run(pid == null ? 0 : pid, token);
+  res.json({ ok: true, active_patient_id: pid });
 });
 
-// GET /api/auth/security-status — статус security setup + список устройств
-app.get('/api/auth/security-status', (req, res) => {
-  const token = req.headers['x-session-token'];
-  const sess = authSession.getSession(token);
-  if (!sess) return res.status(401).json({ error: 'Требуется авторизация' });
+// ── Удалены v4.1: PIN-login, verify-device, set-security-question,
+//                  security-status, revoke-device ────────────
+// Все они заменены на cf-bootstrap выше — Google OAuth через CF Access
+// единственный путь входа.
 
-  const hasQuestion = authSession.hasSecurityQuestion(sess.patient_id);
-  const devices = authSession.listDevices(sess.patient_id);
-  const q = hasQuestion ? authSession.getSecurityQuestion(sess.patient_id) : null;
-
-  res.json({
-    has_security_question: hasQuestion,
-    question: q?.question || null,
-    devices,
-  });
-});
-
-// POST /api/auth/revoke-device — разлогинить конкретное устройство
-app.post('/api/auth/revoke-device', (req, res) => {
-  const token = req.headers['x-session-token'];
-  const sess = authSession.getSession(token);
-  if (!sess) return res.status(401).json({ error: 'Требуется авторизация' });
-
-  const { device_id } = req.body || {};
-  if (!device_id) return res.status(400).json({ error: 'device_id required' });
-
-  authSession.revokeDevice(device_id, sess.patient_id);
-  authSession.logAuthEvent('device_revoked', clientIp(req), userAgent(req), {
-    patient_id: sess.patient_id, device_id,
-  });
-  res.json({ ok: true });
-});
-
-// GET /api/auth/check — verify session is still valid
+// GET /api/auth/check — verify session is still valid (v4.1 semantics)
 app.get('/api/auth/check', (req, res) => {
-  // Dev mode (нет ни .env PIN ни хеша)
-  if (!config.APP_PIN && !authSession.getStoredPinHash(1)) return res.json({ valid: true });
   const token = req.headers['x-session-token'];
   const sess = authSession.getSession(token);
   if (sess) {
     authSession.touchSession(token, clientIp(req));
     return res.json({ valid: true, expires_at: sess.expires_at });
+  }
+  // Если есть валидный CF JWT — сигналим клиенту что нужен bootstrap.
+  if (req.cfEmail) {
+    return res.status(401).json({ valid: false, needs_bootstrap: true });
   }
   res.status(401).json({ valid: false });
 });
@@ -454,216 +220,21 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/auth/logout-all — ревокация ВСЕХ сессий пациента кроме текущей
+// POST /api/auth/logout-all — ревокация ВСЕХ сессий текущего user кроме этой
 app.post('/api/auth/logout-all', (req, res) => {
   const token = req.headers['x-session-token'];
   const sess = authSession.getSession(token);
-  if (!sess) return res.status(401).json({ error: 'Требуется авторизация' });
-  authSession.revokeAllSessions(sess.patient_id, token);
-  authSession.logAuthEvent('logout_all', clientIp(req), userAgent(req), { patient_id: sess.patient_id });
+  if (!sess || !sess.user_id) return res.status(401).json({ error: 'Требуется авторизация' });
+  // v4.1: ревокируем по user_id (а не patient_id — patient теперь много на user)
+  rawDb.prepare('UPDATE sessions SET revoked = 1 WHERE user_id = ? AND token != ?')
+    .run(sess.user_id, token);
+  authSession.logAuthEvent('logout_all', clientIp(req), userAgent(req), { user_id: sess.user_id });
   res.json({ ok: true });
 });
 
-// POST /api/auth/change-pin — смена PIN (нужен текущий)
-app.post('/api/auth/change-pin', (req, res) => {
-  const token = req.headers['x-session-token'];
-  const sess = authSession.getSession(token);
-  if (!sess) return res.status(401).json({ error: 'Требуется авторизация' });
-
-  const { old_pin, new_pin } = req.body || {};
-  const stored = authSession.getStoredPinHash(sess.patient_id);
-  if (!authSession.verifyPin(old_pin, stored)) {
-    authSession.logAuthEvent('change_pin_fail', clientIp(req), userAgent(req), { reason: 'wrong_old_pin' });
-    return res.status(401).json({ error: 'Неверный текущий PIN' });
-  }
-  try {
-    authSession.setPin(new_pin, sess.patient_id);
-    // setPin revokes all sessions — создаём новую для текущего клиента
-    const currentDeviceId = req.headers['x-device-id'] || null;
-    const newToken = authSession.createSession(sess.patient_id, clientIp(req), userAgent(req), currentDeviceId);
-    authSession.logAuthEvent('change_pin_success', clientIp(req), userAgent(req), { patient_id: sess.patient_id });
-    res.json({ ok: true, token: newToken });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// ── v4.0 login/password + register (multi-user) ─────────────
-//
-// Параллельные endpoint-ы к PIN-flow:
-//   POST /api/auth/login-password — email + password → session (с user_id)
-//   POST /api/auth/register       — email из CF Access JWT + password
-//                                   → создаётся patient + user + session
-//   GET  /api/me                  — текущий user (id, email, role, ai_enabled,
-//                                   patient_id). 401 если нет session.
-//
-// PIN-flow выше остаётся работать без изменений (legacy + per-device
-// fast-path). На фронте позже добавим LoginScreen как основной экран,
-// PIN перейдёт в Settings как опция.
-
-app.post('/api/auth/login-password', (req, res) => {
-  const { email, password } = req.body || {};
-  const ip = clientIp(req);
-  const ua = userAgent(req);
-  const deviceId = req.headers['x-device-id'] || req.body?.device_id || null;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: 'email и password обязательны' });
-  }
-
-  try {
-    // Backoff: тот же механизм что и для PIN. Ключ ip+device_id;
-    // юзера ещё не нашли, поэтому patient_id передаём null.
-    const lockout = authSession.checkLockout(ip, deviceId);
-    if (lockout.locked) {
-      authSession.logAuthEvent('login_pwd_locked', ip, ua, {
-        email, device_id: deviceId, remaining_ms: lockout.remainingMs,
-      });
-      return res.status(429).json({
-        error: 'Слишком много попыток. Попробуйте позже.',
-        locked_until: new Date(Date.now() + lockout.remainingMs).toISOString(),
-        remaining_sec: Math.ceil(lockout.remainingMs / 1000),
-        attempts: lockout.attempts,
-      });
-    }
-
-    const user = authSession.findUserByEmail(email);
-    // ВАЖНО: одинаковый ответ для «нет такого email» и «неверный password»,
-    // чтобы не превращать форму в user enumeration oracle.
-    if (!user || !authSession.verifyPassword(password, user.password_hash)) {
-      const newLockout = authSession.recordAuthFailure(ip, deviceId, user?.patient_id || null);
-      authSession.logAuthEvent('login_pwd_fail', ip, ua, {
-        email, attempts: newLockout.attempts,
-        reason: user ? 'wrong_password' : 'unknown_email',
-      });
-      return res.status(401).json({
-        error: 'Неверный email или пароль',
-        attempts: newLockout.attempts,
-        next_lockout_sec: newLockout.locked ? Math.ceil(newLockout.remainingMs / 1000) : 0,
-      });
-    }
-
-    // Успех. Регистрируем device как trusted (для password-юзеров пока
-    // без security question — это PIN-фича).
-    if (deviceId) {
-      try {
-        authSession.registerDevice(deviceId, user.patient_id, null, ip, ua);
-      } catch (regErr) {
-        if (regErr.status === 403) {
-          authSession.logAuthEvent('login_pwd_blocked_revoked', ip, ua, {
-            user_id: user.id, device_id: deviceId,
-          });
-          return res.status(403).json({
-            error: 'Это устройство было отозвано владельцем.',
-            device_revoked: true,
-          });
-        }
-        throw regErr;
-      }
-    }
-
-    const token = authSession.createSession(user.patient_id, ip, ua, deviceId, user.id);
-    authSession.resetAuthFailures(ip, deviceId);
-    authSession.updateLastLogin(user.id);
-    authSession.logAuthEvent('login_pwd_success', ip, ua, {
-      user_id: user.id, email: user.email,
-    });
-
-    res.json({
-      token,
-      expires_days: authSession.SESSION_MAX_AGE_DAYS,
-      user: {
-        id: user.id, email: user.email, role: user.role,
-        ai_enabled: !!user.ai_enabled, patient_id: user.patient_id,
-      },
-    });
-  } catch (err) {
-    console.error('[auth] login-password error:', err);
-    res.status(500).json({ error: 'Ошибка авторизации' });
-  }
-});
-
-app.post('/api/auth/register', (req, res) => {
-  // Регистрация ТОЛЬКО за Cloudflare Access — email берётся из доверенного
-  // JWT (req.cfEmail), юзер задаёт лишь password. Без CF Access registration
-  // отключена (нет identity-provider для whitelist «друзей»).
-  if (!req.cfEmail) {
-    return res.status(403).json({
-      error: 'Регистрация доступна только через Cloudflare Access. ' +
-             'Если вы видите это сообщение и должны иметь доступ — обратитесь к админу.',
-    });
-  }
-
-  const { password, full_name, date_of_birth, gender } = req.body || {};
-  const ip = clientIp(req);
-  const ua = userAgent(req);
-
-  if (!password || String(password).length < 8) {
-    return res.status(400).json({ error: 'Пароль должен быть не короче 8 символов' });
-  }
-
-  // Защита от двойной регистрации
-  const existing = authSession.findUserByEmail(req.cfEmail);
-  if (existing) {
-    return res.status(409).json({
-      error: 'Пользователь с этим email уже зарегистрирован. Войдите по паролю.',
-    });
-  }
-
-  try {
-    // Создаём новый patient + user в одной транзакции — если что-то падает,
-    // не остаётся ни осиротевшего patient ни висящего user.
-    const txn = rawDb.transaction(() => {
-      const p = rawDb.prepare(
-        'INSERT INTO patient (full_name, date_of_birth, gender) VALUES (?, ?, ?)'
-      ).run(
-        String(full_name || req.cfEmail.split('@')[0]).slice(0, 200),
-        date_of_birth || null,
-        gender || null
-      );
-      const patientId = Number(p.lastInsertRowid);
-      const user = authSession.createUser({
-        email: req.cfEmail,
-        password,
-        patient_id: patientId,
-        role: 'user',         // обычный юзер, не admin
-        ai_enabled: 0,         // AI выдаётся вручную UPDATE-ом
-      });
-      return { user, patientId };
-    });
-
-    const { user, patientId } = txn();
-    const deviceId = req.headers['x-device-id'] || null;
-    const token = authSession.createSession(patientId, ip, ua, deviceId, user.id);
-    authSession.updateLastLogin(user.id);
-    authSession.logAuthEvent('register_success', ip, ua, {
-      user_id: user.id, email: user.email, patient_id: patientId,
-    });
-
-    res.status(201).json({
-      token,
-      expires_days: authSession.SESSION_MAX_AGE_DAYS,
-      user: {
-        id: user.id, email: user.email, role: user.role,
-        ai_enabled: !!user.ai_enabled, patient_id: user.patient_id,
-      },
-    });
-  } catch (err) {
-    console.error('[auth] register error:', err);
-    if (err.message?.includes('UNIQUE')) {
-      return res.status(409).json({ error: 'email уже зарегистрирован' });
-    }
-    res.status(500).json({ error: 'Ошибка регистрации' });
-  }
-});
-
-// CF Access status — фронт спрашивает чтобы показать правильный UI:
-//   - cf_enabled=true + cf_email=null  → CF на, но юзер не залогинен в CF
-//     (странный случай, бывает при прямом доступе через Tailscale)
-//   - cf_enabled=true + cf_email='...' → CF на, юзер залогинен; Register
-//     показывает email, нельзя его поменять, остаётся ввести пароль
-//   - cf_enabled=false                  → CF off; Register показывает
-//     «регистрация недоступна, обратитесь к админу»
+// CF Access status — фронт спрашивает чтобы понимать обстановку.
+// Если cf_enabled=true и cf_email есть → юзер уже прошёл Google login,
+// бэк сам сделает bootstrap при первом /api/me запросе.
 app.get('/api/auth/cf-status', (req, res) => {
   res.json({
     cf_enabled: !!(config.CF_ACCESS_TEAM_DOMAIN && config.CF_ACCESS_AUD),
@@ -671,58 +242,47 @@ app.get('/api/auth/cf-status', (req, res) => {
   });
 });
 
+// GET /api/me — текущий user + список patients + active_patient_id.
+// Сигналит needs_bootstrap=true (401) если есть валидный CF JWT но
+// нет session — фронту следует вызвать /auth/cf-bootstrap.
 app.get('/api/me', (req, res) => {
   const token = req.headers['x-session-token'];
   const sess = authSession.getSession(token);
-  if (!sess) return res.status(401).json({ error: 'Требуется авторизация' });
-
-  // Если сессия создана через login-password — есть user_id, возвращаем
-  // полный профиль. Если legacy PIN-сессия без user_id — возвращаем минимум
-  // на основе patient_id (для совместимости с текущим UI на проде).
-  if (sess.user_id) {
-    const user = authSession.getUserById(sess.user_id);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    return res.json({
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      ai_enabled: !!user.ai_enabled,
-      patient_id: user.patient_id,
-      last_login_at: user.last_login_at,
-      auth_method: 'password',
-    });
+  if (!sess || !sess.user_id) {
+    if (req.cfEmail) return res.status(401).json({ error: 'Требуется bootstrap', needs_bootstrap: true });
+    return res.status(401).json({ error: 'Требуется авторизация' });
   }
-  // legacy PIN-сессия
+  const user = authSession.getUserById(sess.user_id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const patients = rawDb.prepare(
+    'SELECT id, full_name, date_of_birth, gender, relationship FROM patient ' +
+    'WHERE owner_user_id = ? ORDER BY id'
+  ).all(user.id);
+
   res.json({
-    id: null,
-    email: null,
-    role: 'admin',      // легаси PIN = admin (это твоя единственная сессия)
-    ai_enabled: true,
-    patient_id: sess.patient_id,
-    auth_method: 'pin',
+    user: {
+      id: user.id, email: user.email, role: user.role,
+      ai_enabled: !!user.ai_enabled, last_login_at: user.last_login_at,
+    },
+    patients,
+    active_patient_id: sess.patient_id || null,
   });
 });
 
-// Session middleware — protect all API routes except auth
+// Session middleware — protect all API routes except auth/public ones.
+// v4.1: при отсутствии session, но валидном CF JWT — отвечаем 401 с
+// needs_bootstrap флагом, чтобы фронт вызвал /auth/cf-bootstrap.
 app.use('/api/', (req, res, next) => {
-  // Skip auth endpoints which are themselves authentication
+  // Whitelist: public + authentication endpoints
   if (
-    req.path === '/auth/login' ||
-    req.path === '/auth/login-password' ||
-    req.path === '/auth/register' ||
-    req.path === '/auth/cf-status' ||
     req.path === '/auth/check' ||
     req.path === '/auth/logout' ||
-    req.path === '/auth/verify-device' ||
-    req.path === '/webauthn/login/options' ||
-    req.path === '/webauthn/login/verify' ||
-    req.path === '/webauthn/available' ||
+    req.path === '/auth/cf-status' ||
+    req.path === '/auth/cf-bootstrap' ||
     req.path === '/health'
   ) return next();
-  // Сначала пробуем подтянуть session — даже в dev-mode мы хотим
-  // привязать req.user/req.session чтобы patientIdMiddleware смог
-  // правильно изолировать non-admin user-ов. Раньше dev-mode возвращал
-  // next() ДО session lookup и multi-user isolation ломалась в dev.
+
   const token = req.headers['x-session-token'] || req.query.token;
   const sess = authSession.getSession(token);
   if (sess) {
@@ -734,8 +294,9 @@ app.use('/api/', (req, res, next) => {
     }
     return next();
   }
-  // Dev mode — нет PIN и нет session: пропускаем без авторизации
-  if (!config.APP_PIN && !authSession.getStoredPinHash(1)) return next();
+  if (req.cfEmail) {
+    return res.status(401).json({ error: 'Требуется bootstrap', needs_bootstrap: true });
+  }
   return res.status(401).json({ error: 'Требуется авторизация' });
 });
 
@@ -774,7 +335,6 @@ app.use('/api/ai-requests', aiRequestsRoutes);
 app.use('/api/prescriptions', prescriptionsRoutes);
 app.use('/api/visit-diagnoses', visitDiagnosesRoutes);
 app.use('/api/patient-context', patientContextRoutes);
-app.use('/api/webauthn', webauthnRoutes);
 app.use('/api/history', historyRoutes);
 
 // SPA fallback
@@ -811,11 +371,9 @@ app.use((err, req, res, _next) => {
 const server = app.listen(config.PORT, () => {
   console.log(`Сервер запущен: http://localhost:${config.PORT}`);
 
-  // One-shot users миграция — создаст admin-юзера на patient 1, если:
-  //   - таблица users пустая (первый старт multi-user версии)
-  //   - И ANAMNESIS_ADMIN_EMAIL + ANAMNESIS_ADMIN_PASSWORD в .env заданы
-  // Иначе пропускает с warning — legacy PIN-flow продолжает работать.
-  authSession.backfillFirstAdminIfNeeded(config);
+  // v4.1: users создаются лениво в /auth/cf-bootstrap при первом
+  // визите юзера. Backfill из env-vars больше не нужен — admin
+  // определяется автоматически если cfEmail совпадает с ANAMNESIS_ADMIN_EMAIL.
 
   initScheduler();
   initBackupScheduler();

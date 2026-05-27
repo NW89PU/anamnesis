@@ -1,39 +1,31 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { IconChevronDown, IconCheck } from '@tabler/icons-react';
-import { qk } from '@/shared/api/keys';
-import { api } from '@/shared/api/client';
-import { EP } from '@/shared/api/endpoints';
-import { usePatientId, changePatient } from '@/shared/auth/usePatientId';
+import { useQueryClient } from '@tanstack/react-query';
+import { IconChevronDown, IconCheck, IconPlus } from '@tabler/icons-react';
+import { useAuth, useActivePatient, usePatients } from '@/shared/auth/useAuth';
+import { AddPatientModal } from '@/features/patients/AddPatientModal';
 import { haptic } from '@/shared/lib/haptic';
-import type { Patient } from '@/shared/types';
 
 /**
- * Patient switcher — фиолетовая плашка с инициалами и ИМЕНЕМ.
+ * Patient switcher (v4.1) — фиолетовая плашка с инициалами и именем активного.
  *
- * Имя берётся как второе слово из full_name, потому что в семье обычно
- * общая фамилия, и различать надо по имени ("Ivanov Ivan" → "Ivan").
+ * Источник данных — AuthContext (не отдельный API-запрос). Список patients
+ * приходит из /api/me при bootstrap и обновляется через reloadPatients
+ * после add/delete.
  *
- * Клик → dropdown со всеми пациентами.
- *
- * Реактивность:
- * - `usePatientId()` — подписан на in-memory store, ре-рендерится при смене
- * - `changePatient(id)` — обновляет localStorage + уведомляет всех подписчиков
- * - `queryClient.clear()` — чистит кэш React Query, данные перезагружаются
+ * Клик → dropdown со всеми пациентами + кнопка «Добавить». Выбор патиента
+ * → setActivePatient (обновляет session на бэке + localStorage + invalidate
+ * React Query).
  */
 export function PatientSwitcher() {
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const currentId = usePatientId();
-
-  const { data: patients = [] } = useQuery({
-    queryKey: qk.patientList,
-    queryFn: () => api.get<Patient[]>(EP.patientList),
-    retry: false,
-  });
+  const patients = usePatients();
+  const active = useActivePatient();
+  const { setActivePatient } = useAuth();
 
   const [open, setOpen] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -43,7 +35,6 @@ export function PatientSwitcher() {
         setOpen(false);
       }
     };
-    // Задержка чтобы не закрыться сразу от того же клика, который открыл
     const timer = setTimeout(() => document.addEventListener('click', onClick), 10);
     return () => {
       clearTimeout(timer);
@@ -51,198 +42,126 @@ export function PatientSwitcher() {
     };
   }, [open]);
 
-  if (patients.length === 0) return null;
+  if (!active && patients.length === 0) return null;
+  const current = active ?? patients[0];
 
-  const current = patients.find((p) => p.id === currentId) ?? patients[0];
-  if (!current) return null;
-
-  const handleSelect = (id: number) => {
+  const handleSelect = async (id: number) => {
     haptic('light');
     setOpen(false);
-    if (id === currentId) return;
-    changePatient(id);
-    // Чистим в-памяти + persist-кэш React Query. Без удаления persist
-    // старые данные могут re-гидрироваться при следующем mount.
+    if (id === current?.id) return;
+    await setActivePatient(id);
     qc.clear();
-    try {
-      localStorage.removeItem('anamnesis-query-cache-v1');
-    } catch {
-      // ignore
-    }
-    // Принудительно ведём пользователя на dashboard — это гарантирует
-    // полный unmount/remount всех Page компонентов с новым patient_id.
-    // Без navigate: useQuery с persist-cache мог показать данные
-    // предыдущего пациента до первого refetch.
+    try { localStorage.removeItem('anamnesis-query-cache-v1'); } catch { /* */ }
     navigate('/dashboard', { replace: true });
   };
 
-  const showChevron = patients.length > 1;
+  const firstName = (full: string) => {
+    const parts = full.trim().split(/\s+/).filter(Boolean);
+    return parts[1] ?? parts[0] ?? '';
+  };
+  const initials = (full: string) => {
+    const parts = full.trim().split(/\s+/).filter(Boolean);
+    const a = parts[0] ?? '?';
+    const b = parts[1] ?? '';
+    if (b) return (a.charAt(0) + b.charAt(0)).toUpperCase();
+    return a.slice(0, 2).toUpperCase();
+  };
 
   return (
-    <div ref={dropdownRef} style={{ position: 'relative' }}>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          haptic('light');
-          if (showChevron) setOpen(!open);
-        }}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '6px 12px',
-          borderRadius: 12,
-          background: 'var(--purple)',
-          border: 'none',
-          cursor: showChevron ? 'pointer' : 'default',
-          fontFamily: 'inherit',
-          WebkitTapHighlightColor: 'transparent',
-          boxShadow: '0 2px 8px rgba(175, 82, 222, 0.3)',
-        }}
-      >
-        <div
+    <>
+      <div ref={dropdownRef} style={{ position: 'relative' }}>
+        <button
+          type="button"
+          onClick={() => { haptic('light'); setOpen((o) => !o); }}
           style={{
-            width: 28,
-            height: 28,
-            borderRadius: '50%',
-            background: 'rgba(255, 255, 255, 0.25)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: 11,
-            fontWeight: 700,
-            color: '#fff',
+            display: 'flex', alignItems: 'center', gap: 10,
+            padding: '8px 12px', borderRadius: 12,
+            background: 'linear-gradient(135deg, var(--purple), var(--blue))',
+            color: '#fff', border: 'none', cursor: 'pointer',
+            fontFamily: 'inherit', fontSize: 14, fontWeight: 600,
+            WebkitTapHighlightColor: 'transparent',
           }}
         >
-          {getInitials(current.full_name)}
-        </div>
-        <span
-          style={{
-            fontSize: 13,
-            fontWeight: 600,
-            color: '#fff',
-            maxWidth: 120,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {getDisplayName(current.full_name)}
-        </span>
-        {showChevron && (
-          <IconChevronDown
-            size={14}
+          <span
             style={{
-              color: 'rgba(255, 255, 255, 0.7)',
-              transition: 'transform 0.15s ease',
-              transform: open ? 'rotate(180deg)' : 'none',
+              width: 28, height: 28, borderRadius: 14,
+              background: 'rgba(255,255,255,0.2)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 11, fontWeight: 700,
             }}
-          />
-        )}
-      </button>
+          >
+            {current ? initials(current.full_name) : '?'}
+          </span>
+          <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {current ? firstName(current.full_name) : 'Выбрать'}
+          </span>
+          {(patients.length > 1 || patients.length === 0) && <IconChevronDown size={14} />}
+        </button>
 
-      {open && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            right: 0,
-            minWidth: 220,
-            background: 'var(--card)',
-            border: '1px solid var(--border)',
-            borderRadius: 14,
-            boxShadow: '0 8px 30px rgba(0, 0, 0, 0.2)',
-            overflow: 'hidden',
-            zIndex: 10001,
-          }}
-        >
-          {patients.map((p) => {
-            const active = p.id === currentId;
-            return (
+        {open && (
+          <div
+            style={{
+              position: 'absolute', top: 'calc(100% + 4px)', right: 0,
+              minWidth: 240, maxWidth: 320,
+              background: 'var(--card)', borderRadius: 12,
+              boxShadow: '0 12px 32px rgba(0,0,0,0.2)',
+              border: '1px solid var(--border)',
+              padding: 4, zIndex: 100,
+            }}
+          >
+            {patients.map((p) => (
               <button
                 key={p.id}
                 type="button"
-                onClick={() => handleSelect(p.id)}
+                onClick={() => void handleSelect(p.id)}
                 style={{
-                  width: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '12px 16px',
-                  border: 'none',
-                  background: active ? 'rgba(175, 82, 222, 0.08)' : 'transparent',
-                  cursor: 'pointer',
-                  textAlign: 'left',
-                  fontFamily: 'inherit',
-                  WebkitTapHighlightColor: 'transparent',
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  width: '100%', padding: '10px 12px', borderRadius: 8,
+                  background: 'transparent', border: 'none', cursor: 'pointer',
+                  color: 'var(--text)', fontSize: 14, textAlign: 'left',
+                  fontFamily: 'inherit', WebkitTapHighlightColor: 'transparent',
                 }}
               >
-                <div
-                  style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: '50%',
-                    background: active ? 'var(--purple)' : 'var(--bg)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 12,
-                    fontWeight: 700,
-                    color: active ? '#fff' : 'var(--text-secondary)',
-                    flexShrink: 0,
-                  }}
-                >
-                  {getInitials(p.full_name)}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontSize: 14,
-                      fontWeight: active ? 600 : 400,
-                      color: 'var(--text)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {getDisplayName(p.full_name)}
-                  </div>
-                  {p.date_of_birth && (
-                    <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                      {new Date(p.date_of_birth).toLocaleDateString('ru-RU')}
-                    </div>
+                <span style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600 }}>{p.full_name}</div>
+                  {p.relationship && (
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{p.relationship}</div>
                   )}
-                </div>
-                {active && <IconCheck size={14} color="var(--purple)" style={{ flexShrink: 0 }} />}
+                </span>
+                {p.id === current?.id && <IconCheck size={16} color="var(--purple)" />}
               </button>
-            );
-          })}
-        </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setShowAdd(true); }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                width: '100%', padding: '10px 12px', borderRadius: 8,
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                color: 'var(--purple)', fontSize: 13, textAlign: 'left',
+                fontFamily: 'inherit', borderTop: '1px solid var(--border)',
+                marginTop: 4, paddingTop: 12,
+                WebkitTapHighlightColor: 'transparent',
+              }}
+            >
+              <IconPlus size={14} /> Добавить пациента
+            </button>
+          </div>
+        )}
+      </div>
+
+      {showAdd && (
+        <AddPatientModal
+          onClose={() => setShowAdd(false)}
+          onCreated={async (p) => {
+            setShowAdd(false);
+            await setActivePatient(p.id);
+            qc.clear();
+            try { localStorage.removeItem('anamnesis-query-cache-v1'); } catch { /* */ }
+            navigate('/dashboard', { replace: true });
+          }}
+        />
       )}
-    </div>
+    </>
   );
-}
-
-/** Инициалы — первые 2 заглавных буквы из слов. */
-export function getInitials(fullName: string | null): string {
-  if (!fullName) return '?';
-  return fullName
-    .split(/\s+/)
-    .map((w) => w[0])
-    .filter(Boolean)
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
-}
-
-/**
- * Отображаемое имя: второе слово из full_name (имя без фамилии).
- * "Ivanov Ivan" → "Ivan". Если только одно слово — возвращаем его.
- */
-export function getDisplayName(fullName: string | null): string {
-  if (!fullName) return 'Пациент';
-  const parts = fullName.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) return parts[1]!;
-  return parts[0] ?? 'Пациент';
 }

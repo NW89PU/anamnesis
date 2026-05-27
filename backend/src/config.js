@@ -9,7 +9,6 @@ module.exports = {
   PORT: parseInt(process.env.PORT, 10) || 3000,
   API_TOKEN: process.env.API_TOKEN || '',
   ADMIN_TOKEN: process.env.ADMIN_TOKEN || '',
-  APP_PIN: process.env.APP_PIN || '',
   SESSION_SECRET: process.env.SESSION_SECRET || 'anamnesis-default-dev-secret-change-me',
   SESSION_MAX_AGE_DAYS: parseInt(process.env.SESSION_MAX_AGE_DAYS, 10) || 30,
   CORS_ORIGINS: process.env.CORS_ORIGINS || '*',
@@ -30,11 +29,8 @@ module.exports = {
   CF_ACCESS_TEAM_DOMAIN: process.env.CF_ACCESS_TEAM_DOMAIN || '',
   CF_ACCESS_AUD: process.env.CF_ACCESS_AUD || '',
 
-  // ─── First admin (миграция при первом старте с пустой users) ──
-  // Если ANAMNESIS_ADMIN_EMAIL + ANAMNESIS_ADMIN_PASSWORD заданы
-  // и таблица users пуста — создаётся admin-юзер, привязанный к
-  // patient(id=1). Только для первого деплоя multi-user; после миграции
-  // переменные можно удалить (хеш уже в БД).
+  // ─── Admin email (v4.1) ─────────────────────────────────────
+  // Email который при первом CF Access bootstrap получит role='admin'
+  // и ai_enabled=1. Все остальные juzery — обычные user-ы.
   ANAMNESIS_ADMIN_EMAIL: process.env.ANAMNESIS_ADMIN_EMAIL || '',
-  ANAMNESIS_ADMIN_PASSWORD: process.env.ANAMNESIS_ADMIN_PASSWORD || '',
 };

@@ -14,7 +14,6 @@ import {
   IconTopologyStar3,
   IconChevronRight,
   IconHistory,
-  IconShieldLock,
   IconLogout,
 } from '@tabler/icons-react';
 import { PageContainer } from '@/shared/layout/PageContainer';
@@ -54,7 +53,6 @@ const MENU: MenuItem[] = [
   { id: 'diagnoses', label: 'Диагнозы', icon: IconStethoscope, iconBg: 'var(--red)', action: 'navigate', target: '/diagnoses' },
   { id: 'graph', label: 'Карта здоровья', icon: IconTopologyStar3, iconBg: 'linear-gradient(135deg,#AF52DE,#007AFF)', action: 'navigate', target: '/graph' },
   { id: 'history', label: 'История изменений', icon: IconHistory, iconBg: 'var(--blue)', action: 'route', target: '/more/history' },
-  { id: 'security', label: 'Безопасность', icon: IconShieldLock, iconBg: 'linear-gradient(135deg,#FF3B30,#FF9500)', action: 'route', target: '/more/security' },
 ];
 
 export function MorePage() {

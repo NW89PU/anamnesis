@@ -203,25 +203,14 @@ Full API is documented in `AI_COORDINATOR_GUIDE.md`.
 
 ## Security model
 
-### Authentication (v4.0 — multi-user)
+### Authentication (v4.1 — Google only via Cloudflare Access)
 
-- **Email + password** (`POST /api/auth/login-password`) as primary login. Same scrypt hashing as PIN.
-- **Per-user data isolation**: each user is bound to exactly one patient via FK. `req.patientId` is resolved from `users.patient_id` server-side; non-admin users cannot override via the `X-Patient-Id` header (silently ignored).
-- **Role gating**: `role='admin'` keeps the cross-patient override and admin-tools API; `role='user'` is locked to their own patient.
-- **AI feature gating**: `users.ai_enabled` controls who can create AI requests and use AI chat. Backend enforces via `requireAiEnabled` middleware on `POST /api/ai-requests`; frontend hides the corresponding buttons.
-- **Registration** is gated behind Cloudflare Access — `POST /api/auth/register` only accepts requests where CF Access populated a verified email JWT. Without CF, registration returns 403.
-
-### Authentication (legacy, still supported)
-
-- **6-digit PIN** (scrypt-hashed) as per-device fast-path. Available at `/pin` after the first login.
-- **WebAuthn biometry** (Face ID / Touch ID / Windows Hello) as fast-path on devices that registered a passkey.
-- **Device trust**: new devices require a security word the first time they log in via PIN.
-- **Server-side exponential backoff**: 3 failures → 1 min lockout → 2 min → 4 min → ... capped at 24 h.
-- **Sessions in SQLite** (14-day sliding expiry, IP + UA tracking, revocation, optional `user_id` link for multi-user sessions).
-
-### Outer layer (optional)
-
-- **Cloudflare Access** — when `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` are set, `Cf-Access-Jwt-Assertion` is validated against CF JWKS (cached 1 h) on every request. Use it as the "friends only" outer gate by email whitelist; in-app login still happens inside.
+- **Sole login path** — Google OAuth via **Cloudflare Access** (email whitelist). Backend validates JWT against CF JWKS (cached 1h), reads the trusted `email` claim as `req.cfEmail`, and lazily upserts the `users` row on first visit. `POST /api/auth/cf-bootstrap` creates the session token. Email matching `ANAMNESIS_ADMIN_EMAIL` becomes admin with `ai_enabled=1`; everyone else is a regular user with AI off.
+- **No passwords stored anywhere.** No PIN, no security questions, no WebAuthn passkeys, no register form, no forgot-password flow. Identity is fully delegated to Cloudflare + Google.
+- **Patient ownership (1 user → N patients)** — each patient row has `owner_user_id`. One user maintains records for self, spouse, kids, parents. After login the app shows a "Who today?" picker with circles for each patient.
+- **Per-user isolation** — `/api/patient/list` is filtered by `owner_user_id`. Any request with `X-Patient-Id` for a patient not owned by the user → 403. Admins see all patients across all users (for management).
+- **Relationship** (free text) — used by the AI coordinator for family-history (genetic context for blood relatives) and cohabitation analysis (shared environment for couples).
+- **AI gating** — `users.ai_enabled` flag controls who can trigger AI work. Backend enforces via `requireAiEnabled` on `POST /api/ai-requests`; frontend hides AI buttons and chat for users without the flag.
 
 ### Network and hardening
 

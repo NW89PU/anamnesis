@@ -1,12 +1,11 @@
 import { useContext } from 'react';
-import { AuthContext, type AuthContextValue, type AuthUser } from './AuthContext';
+import { AuthContext, type AuthContextValue, type AuthUser, type AuthPatient } from './AuthContext';
+
+// Re-export для удобства консьюмеров (модалок и др.)
+export type { AuthUser, AuthPatient };
 
 /**
- * Хук для доступа к auth-контексту. Бросает если использован вне
- * <AuthProvider>.
- *
- * Вынесен из AuthContext.tsx в отдельный файл — иначе React Fast Refresh
- * не работает при изменениях провайдера (ESLint react-refresh правило).
+ * Хук для доступа к auth-контексту. Бросает если использован вне <AuthProvider>.
  */
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
@@ -14,11 +13,17 @@ export function useAuth(): AuthContextValue {
   return ctx;
 }
 
-/**
- * Удобный хук для компонентов которым нужен только user.
- * Возвращает null до загрузки или если unauthenticated.
- */
+/** Текущий user. null до загрузки или если unauthenticated. */
 export function useMe(): AuthUser | null {
-  const { user } = useAuth();
-  return user;
+  return useAuth().user;
+}
+
+/** Активный пациент (объект, не id). null если не выбран. */
+export function useActivePatient(): AuthPatient | null {
+  return useAuth().activePatient;
+}
+
+/** Список всех patients принадлежащих текущему user-у. */
+export function usePatients(): AuthPatient[] {
+  return useAuth().patients;
 }

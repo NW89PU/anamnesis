@@ -103,9 +103,12 @@ function createSession(patientId, ip, userAgent, deviceId = null, userId = null)
   const token = generateSessionToken();
   const now = Date.now();
   const expires = new Date(now + SESSION_MS).toISOString().replace('T', ' ').slice(0, 19);
+  // sessions.patient_id NOT NULL (исторический artifact). 0 = sentinel
+  // «активный пациент не выбран». /api/me и middleware трактуют 0 как null.
+  const pid = patientId == null ? 0 : patientId;
   rawDb.prepare(
     "INSERT INTO sessions (token, patient_id, expires_at, ip, user_agent, device_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(token, patientId, expires, ip || null, userAgent || null, deviceId || null, userId || null);
+  ).run(token, pid, expires, ip || null, userAgent || null, deviceId || null, userId || null);
   return token;
 }
 
@@ -381,132 +384,66 @@ function revokeDevice(deviceId, patientId) {
   };
 }
 
-// ─── v4.0 users (login/password, multi-user) ────────────────
+// ─── v4.1 users (Google-only via CF Access) ─────────────────
 //
-// hashPassword/verifyPassword — это те же scrypt-параметры что и для PIN,
-// просто отдельные имена для читаемости (PIN ≠ password концептуально).
-// При необходимости параметры можно усилить только для password (длиннее
-// чем PIN, можно дороже хешировать).
-
-function hashPassword(password) {
-  return hashPin(password);
-}
-
-function verifyPassword(password, stored) {
-  return verifyPin(password, stored);
-}
-
-/**
- * Создать нового пользователя. Не проверяет уникальность email — это
- * делает UNIQUE constraint, бросит SqliteError если email занят.
- * Возвращает { id, email, patient_id, role, ai_enabled }.
- */
-function createUser({ email, password, patient_id, role = 'user', ai_enabled = 0 }) {
-  if (!email || !password || !patient_id) {
-    throw new Error('email, password, patient_id are required');
-  }
-  const emailNorm = String(email).trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailNorm)) {
-    throw new Error('Invalid email format');
-  }
-  if (String(password).length < 8) {
-    throw new Error('Password must be at least 8 characters');
-  }
-  const hash = hashPassword(password);
-  const r = rawDb.prepare(
-    "INSERT INTO users (email, password_hash, patient_id, role, ai_enabled) VALUES (?, ?, ?, ?, ?)"
-  ).run(emailNorm, hash, patient_id, role, ai_enabled ? 1 : 0);
-  return getUserById(Number(r.lastInsertRowid));
-}
-
-function findUserByEmail(email) {
-  if (!email) return null;
-  const emailNorm = String(email).trim().toLowerCase();
-  return rawDb.prepare(
-    "SELECT id, email, password_hash, patient_id, role, ai_enabled, created_at, last_login_at FROM users WHERE email = ?"
-  ).get(emailNorm) || null;
-}
+// Identity провайдер: Cloudflare Access JWT с verified email-claim'ом.
+// Никаких паролей, security questions, PIN-ов. Юзер создаётся лениво
+// при первом валидном CF JWT (см. findOrCreateUserFromCfEmail).
+//
+// Старые колонки users.password_hash и users.patient_id остаются в
+// схеме (SQLite ALTER DROP COLUMN мучительный) но не читаются.
 
 function getUserById(id) {
   if (!id) return null;
   return rawDb.prepare(
-    "SELECT id, email, patient_id, role, ai_enabled, created_at, last_login_at FROM users WHERE id = ?"
+    "SELECT id, email, role, ai_enabled, created_at, last_login_at FROM users WHERE id = ?"
   ).get(id) || null;
 }
 
-function updateLastLogin(id) {
-  rawDb.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(id);
-}
-
 /**
- * One-shot миграция при старте сервиса.
- * Если таблица users пустая И в .env заданы ANAMNESIS_ADMIN_EMAIL/PASSWORD
- * И patient(id=1) существует → создаётся admin-юзер привязанный к patient 1,
- * с role='admin' и ai_enabled=1.
+ * Upsert юзера на основе email из CF Access JWT.
+ * - Если юзер уже есть → обновляем last_login_at, возвращаем.
+ * - Если новый → создаём. Если email совпадает с ANAMNESIS_ADMIN_EMAIL
+ *   из .env → role='admin', ai_enabled=1. Иначе role='user', ai_enabled=0.
  *
- * Все существующие активные sessions с patient_id=1 получают user_id=новой
- * записи — это значит твоя текущая PIN-сессия не разлогинится и сразу
- * начинает быть «правильной» session-with-user.
- *
- * Если env vars не заданы — пропуск с warning. Существующий PIN-flow
- * продолжает работать как раньше (legacy режим без users).
+ * password_hash пишем пустой строкой (NOT NULL constraint в схеме,
+ * исторический artifact — не убираем колонку).
  */
-function backfillFirstAdminIfNeeded(config) {
-  try {
-    const userCount = rawDb.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-    if (userCount > 0) return; // ничего не делаем, юзеры уже есть
+function findOrCreateUserFromCfEmail(cfEmail, config) {
+  if (!cfEmail) throw new Error('cfEmail required');
+  const emailNorm = String(cfEmail).trim().toLowerCase();
 
-    const email = (config.ANAMNESIS_ADMIN_EMAIL || '').trim();
-    const password = config.ANAMNESIS_ADMIN_PASSWORD || '';
-    if (!email || !password) {
-      console.warn('[users] No admin backfill: ANAMNESIS_ADMIN_EMAIL/PASSWORD not set in .env.');
-      console.warn('[users] Login/password is unavailable until you set these and restart.');
-      console.warn('[users] PIN-based auth continues to work as before.');
-      return;
-    }
+  let user = rawDb.prepare(
+    "SELECT id, email, role, ai_enabled FROM users WHERE email = ?"
+  ).get(emailNorm);
 
-    const patient = rawDb.prepare('SELECT id FROM patient WHERE id = 1').get();
-    if (!patient) {
-      console.error('[users] Cannot backfill admin: patient(id=1) does not exist.');
-      return;
-    }
-
-    const user = createUser({
-      email, password, patient_id: 1, role: 'admin', ai_enabled: 1,
-    });
-
-    // Привязываем уже активные sessions этого patient к новому user_id.
-    // Без этого старая PIN-сессия осталась бы без user_id (legacy режим)
-    // и /api/me не смог бы сказать кто залогинен.
-    const updated = rawDb.prepare(
-      'UPDATE sessions SET user_id = ? WHERE patient_id = 1 AND user_id IS NULL AND revoked = 0'
-    ).run(user.id);
-
-    console.log(`[users] Created first admin user id=${user.id} email=${user.email} for patient 1`);
-    if (updated.changes > 0) {
-      console.log(`[users] Linked ${updated.changes} active PIN-session(s) to this user`);
-    }
-
-    // Auth log — для аудита когда именно появился первый юзер
-    logAuthEvent('first_admin_backfill', null, null, {
-      user_id: user.id, email: user.email, sessions_linked: updated.changes,
-    });
-  } catch (e) {
-    console.error('[users] Backfill failed:', e.message);
-    // не throw — сервис должен стартовать даже если миграция упала
+  if (user) {
+    rawDb.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(user.id);
+    return getUserById(user.id);
   }
+
+  const adminEmail = (config?.ANAMNESIS_ADMIN_EMAIL || '').trim().toLowerCase();
+  const isAdmin = adminEmail && emailNorm === adminEmail;
+  const role = isAdmin ? 'admin' : 'user';
+  const ai_enabled = isAdmin ? 1 : 0;
+
+  // password_hash NOT NULL осталось в схеме — пишем placeholder
+  // (никогда не используется, password-flow удалён).
+  const r = rawDb.prepare(
+    "INSERT INTO users (email, password_hash, patient_id, role, ai_enabled, last_login_at) " +
+    "VALUES (?, '', 0, ?, ?, datetime('now'))"
+  ).run(emailNorm, role, ai_enabled);
+  const newUser = getUserById(Number(r.lastInsertRowid));
+  console.log(`[users] Created user id=${newUser.id} email=${newUser.email} role=${newUser.role}${isAdmin ? ' (admin from ANAMNESIS_ADMIN_EMAIL)' : ''}`);
+  logAuthEvent('user_created', null, null, { user_id: newUser.id, email: newUser.email, role: newUser.role });
+  return newUser;
 }
 
 module.exports = {
   hashPin,
   verifyPin,
-  hashPassword,
-  verifyPassword,
-  createUser,
-  findUserByEmail,
   getUserById,
-  updateLastLogin,
-  backfillFirstAdminIfNeeded,
+  findOrCreateUserFromCfEmail,
   getStoredPinHash,
   setPin,
   createSession,

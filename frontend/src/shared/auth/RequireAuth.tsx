@@ -1,40 +1,54 @@
 import type { ReactNode } from 'react';
-import { Navigate, useLocation } from 'react-router';
 import { useAuth } from './useAuth';
+import { PatientPickerScreen } from './PatientPickerScreen';
 
 /**
- * Guard-компонент: пропускает только аутентифицированных пользователей.
+ * Guard (v4.1):
  *
- * - Во время `loading` показывает пустой экран (SW может восстанавливать сессию)
- * - Если `unauthenticated` — Navigate на /pin с сохранением исходного пути в state
- * - Если `authenticated` — рендерит children
+ *   loading                 → пустой экран (auto-bootstrap идёт)
+ *   unauthenticated         → "Refreshing..." с auto-reload через 3s
+ *                             (CF Access редирект на Google login)
+ *   no-patients / needs-patient → PatientPickerScreen
+ *   authenticated           → AppShell (children)
  */
 export function RequireAuth({ children }: { children: ReactNode }) {
   const { status } = useAuth();
-  const location = useLocation();
 
   if (status === 'loading') {
     return (
       <div
         style={{
-          position: 'fixed',
-          inset: 0,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          background: 'var(--bg)',
+          position: 'fixed', inset: 0, background: 'var(--bg)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}
       >
-        {/* Пустой экран — избегаем flash контента перед редиректом */}
+        {/* пустой — избегаем flash контента */}
       </div>
     );
   }
 
   if (status === 'unauthenticated') {
-    // v4.0: основной экран входа — /login (email + password).
-    // PIN-screen остаётся доступен из /login как fast-path для тех,
-    // кто уже привязал устройство (PIN/WebAuthn).
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    // CF Access cookie невалиден или истёк → нужен полный re-login через Google.
+    // Перезагружаем — CF Access сам сделает 302 на свою login page.
+    setTimeout(() => window.location.reload(), 2000);
+    return (
+      <div
+        style={{
+          minHeight: '100vh', background: 'var(--bg)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          gap: 16, padding: 20,
+        }}
+      >
+        <img src="/icons/icon.svg" alt="" style={{ width: 64, height: 64, opacity: 0.5 }} />
+        <div style={{ fontSize: 16, color: 'var(--text-secondary)', textAlign: 'center' }}>
+          Перезагружаемся для входа через Google…
+        </div>
+      </div>
+    );
+  }
+
+  if (status === 'no-patients' || status === 'needs-patient') {
+    return <PatientPickerScreen />;
   }
 
   return <>{children}</>;

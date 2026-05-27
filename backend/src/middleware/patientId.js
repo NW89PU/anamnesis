@@ -1,55 +1,63 @@
+const { rawDb } = require('../db');
+
 // Authoritative patient_id resolution.
 //
-// До v4.0 этот middleware читал patient_id из заголовка X-Patient-Id
-// (управляется клиентом) с дефолтом 1. В single-user режиме это было OK,
-// но при multi-user это критическая дыра: любой залогиненный friend мог
-// поставить X-Patient-Id: 1 и читать данные другого пациента (включая
-// admin'а).
+// v4.1: user может владеть N пациентами (patient.owner_user_id). req.patientId
+// = (1) X-Patient-Id header / query, (2) session.patient_id (active patient),
+// (3) первый owned patient, (4) null если ни одного.
 //
-// Новая логика:
-//
-//   1. req.user есть (login-password сессия):
-//      - role === 'admin'  → header можно использовать для override
-//                            (для админских cross-patient запросов).
-//      - role === 'user'   → patient_id СТРОГО из req.user.patient_id,
-//                            header игнорируется. Это и есть фикс.
-//
-//   2. req.session есть, но req.user нет (legacy PIN-сессия, до миграции):
-//      header можно (это владелец, у него и так full access).
-//
-//   3. Ни session, ни user (admin token Bearer, dev mode, публичные
-//      endpoint-ы вроде /health, /auth/*): header можно, дефолт 1
-//      (back-compat для AI Coordinator который дёргает /api/admin/tools/*
-//      с ADMIN_TOKEN и X-Patient-Id).
-//
-// Header принимается из X-Patient-Id или query ?patient_id=N. Запись
-// в req.patientId — все 57+ потребителей читают именно его.
-function patientIdMiddleware(req, _res, next) {
+// Безопасность:
+//   - admin (req.user.role='admin' или нет req.user — admin-token bearer)
+//     → header можно использовать для override без ownership check
+//   - user (req.user.role='user') → patient_id из header допустим только
+//     если этот patient owned юзером, иначе 403. Без header — session.patient_id
+//     (тоже проверяется на ownership) или первый owned.
+function patientIdMiddleware(req, res, next) {
   const headerVal = parseInt(req.headers['x-patient-id'] || req.query.patient_id, 10);
   const headerPid = headerVal > 0 ? headerVal : null;
 
-  // Case 1: аутентифицированный multi-user
-  if (req.user) {
-    if (req.user.role === 'admin') {
-      req.patientId = headerPid || req.user.patient_id;
-    } else {
-      // Non-admin: жёсткая привязка к собственному patient.
-      // Если клиент попытался override-нуть header-ом — игнорируем
-      // молча. Логирование в audit_log можно добавить позже если
-      // нужен сигнал «кто-то пытается».
-      req.patientId = req.user.patient_id;
+  // Case A: admin / admin-token-bearer / нет user — header может override
+  if (!req.user || req.user.role === 'admin') {
+    req.patientId = headerPid
+      || (req.session && req.session.patient_id)
+      || null;
+    // Для admin-token-bearer без session — default 1 для backward compat
+    if (req.patientId == null && !req.user && !req.session) req.patientId = 1;
+    return next();
+  }
+
+  // Case B: regular user — нужна ownership-проверка
+  const userId = req.user.id;
+
+  // Сначала пытаемся header (если задан) — но проверяем ownership
+  if (headerPid != null) {
+    const owned = rawDb.prepare(
+      'SELECT id FROM patient WHERE id = ? AND owner_user_id = ?'
+    ).get(headerPid, userId);
+    if (!owned) {
+      return res.status(403).json({ error: 'Нет доступа к этому пациенту' });
     }
+    req.patientId = headerPid;
     return next();
   }
 
-  // Case 2: session есть, user нет → legacy PIN admin (это ты до миграции)
-  if (req.session) {
-    req.patientId = headerPid || req.session.patient_id || 1;
-    return next();
+  // Без header — берём active из session (проверяем что owned, на случай
+  // если удалили или утратили доступ после установки)
+  if (req.session && req.session.patient_id) {
+    const owned = rawDb.prepare(
+      'SELECT id FROM patient WHERE id = ? AND owner_user_id = ?'
+    ).get(req.session.patient_id, userId);
+    if (owned) {
+      req.patientId = req.session.patient_id;
+      return next();
+    }
   }
 
-  // Case 3: нет session — admin token bearer / dev mode / публичные endpoint-ы
-  req.patientId = headerPid || 1;
+  // Fallback — первый owned patient
+  const first = rawDb.prepare(
+    'SELECT id FROM patient WHERE owner_user_id = ? ORDER BY id LIMIT 1'
+  ).get(userId);
+  req.patientId = first ? first.id : null;
   next();
 }
 
